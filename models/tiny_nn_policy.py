@@ -37,7 +37,7 @@ class SelfLearningAgent:
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
         self.memory = []
         self.cumulative_reward = 0.0
-
+        self.mmr = 0
         self.behavior_counts = {
             'buy': 0,
             'sell': 0,
