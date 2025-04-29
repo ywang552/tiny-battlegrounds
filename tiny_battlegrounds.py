@@ -120,7 +120,6 @@ class TinyBattlegroundsEnv:
     def simulate_combat(self, attacker, defender):
         attacker_strength = sum(m.strength() for m in attacker.board)
 
-        # Prepare defender info
         if defender == 'ghost':
             if self.latest_dead_agent:
                 defender_strength = sum(m.strength() for m in self.latest_dead_agent.board)
@@ -138,7 +137,16 @@ class TinyBattlegroundsEnv:
             defender_tier = defender.tier
             defender_real = True
 
-        # ⚔️ Decide fight outcome
+        # 🚨 New rule: punish empty boards
+        if len(attacker.board) == 0:
+            attacker.health -= 5
+            attacker.cumulative_reward -= 5.0  # Optional: punish reward also
+
+        if defender_real and len(defender.board) == 0:
+            defender.health -= 5
+            defender.cumulative_reward -= 5.0  # Optional: punish reward also
+
+        # ⚔️ Normal fight resolution
         if attacker_strength > defender_strength:
             attacker.cumulative_reward += 2.0
             if defender_real:
@@ -158,7 +166,6 @@ class TinyBattlegroundsEnv:
             if defender_real:
                 defender.cumulative_reward += 0.5
             # No health loss on tie
-
 
 
     def remove_dead(self):
@@ -203,7 +210,9 @@ class TinyBattlegroundsEnv:
             if not agent.alive:
                 continue
 
-            agent.gold = min(agent.gold + 1, 10)
+            base_gold = min(3 + (self.turn - 1), 10)  # 3 on Turn 1, 4 on Turn 2, etc, capped at 10
+            agent.gold = base_gold
+
             agent.shop = self.roll_shop(agent.tier)
 
             while agent.gold > 0:
@@ -233,7 +242,7 @@ class TinyBattlegroundsEnv:
                     if agent.gold >= cost:
                         agent.gold -= cost
                         agent.tier = min(agent.tier + 1, 3)
-                        agent.cumulative_reward += 2.0
+                        agent.cumulative_reward += 3.0  # ✨ Reward leveling
                         agent.gold_spent_this_game += cost
 
                 elif action_str.startswith("buy_"):
@@ -241,7 +250,7 @@ class TinyBattlegroundsEnv:
                     if idx < len(agent.shop) and agent.gold >= 3 and len(agent.board) < 7:
                         agent.gold -= 3
                         agent.board.append(agent.shop.pop(idx))
-                        agent.cumulative_reward += 1.0
+                        agent.cumulative_reward += 2.0  # ✨ Reward buying
                         agent.minions_bought_this_game += 1
 
                 elif action_str == "roll":
@@ -253,9 +262,10 @@ class TinyBattlegroundsEnv:
                 elif action_str.startswith("sell_"):
                     idx = int(action_str.split("_")[1])
                     if idx < len(agent.board):
-                        sold_minion = agent.board.pop(idx)
                         agent.gold += 1
-                        agent.cumulative_reward += 0.5
+                        agent.board.pop(idx)
+                        agent.cumulative_reward += 0.5  # Optional small reward for selling
+
 
         # ⚔️ --- COMBAT PHASE ---
         alive_agents = [a for a in self.agents if a.alive]
@@ -270,7 +280,7 @@ class TinyBattlegroundsEnv:
 
 
 
-    def play_game(self):
+    def play_game(self, reset_mmr=False):
         self.setup()
         while sum(1 for agent in self.agents if agent.alive) > 1 and self.turn <= 100:
             self.step()
@@ -288,16 +298,20 @@ class TinyBattlegroundsEnv:
             agent.minions_bought_history.append(agent.minions_bought_this_game)
             agent.turns_skipped_history.append(agent.turns_skipped_this_game)
 
+        rewards = self.calculate_rewards()
 
-        # print("Final Dead Map:", {agent.name: turn for agent, turn in self.dead.items()})
+        # ✨ Correct flexible MMR update
+        for agent in self.agents:
+            if reset_mmr:
+                agent.mmr = rewards.get(agent.name, 0)
+            else:
+                agent.mmr += rewards.get(agent.name, 0)
 
-        # print("\nFinal Boards at Turn Limit:")
-        # for agent in self.agents:
-        #     board_desc = [str(m) for m in agent.board]
-        #     print(f"{agent.name} (Alive: {agent.alive}, Health: {agent.health}): Board -> {board_desc}")
+            agent.mmr = max(0, agent.mmr)
+
+        return rewards
 
 
-        return self.calculate_rewards()
 
     def calculate_rewards(self):
         death_turns = sorted(self.dead.items(), key=lambda x: (x[1], random.random()))
