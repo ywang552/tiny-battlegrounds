@@ -2,6 +2,7 @@ import random
 import torch
 from models.tiny_nn_policy import SelfLearningAgent  # <-- import your self-learning agent!
 import matplotlib.pyplot as plt  # Add this at the top of your file if not imported yet
+import os
 
 # --- Minion Class ---
 class Minion:
@@ -37,10 +38,15 @@ class TinyBattlegroundsEnv:
     def __init__(self, agents):
         self.agents = agents
         self.turn = 1
-        self.dead = {}
-        self.ghost_board = None
+        self.dead = {}  # {agent: turn number}
+        self.latest_dead_agent = None
+
 
     def setup(self):
+        self.turn = 1
+        self.dead = {}
+        self.latest_dead_agent = None
+
         for agent in self.agents:
             agent.gold = 3
             agent.tier = 1
@@ -48,6 +54,20 @@ class TinyBattlegroundsEnv:
             agent.health = 40
             agent.alive = True
             agent.shop = self.roll_shop(agent.tier)
+            agent.cumulative_reward = 0  # ← RESET cumulative reward each game!
+            agent.gold_spent_this_game = 0
+            agent.minions_bought_this_game = 0
+            agent.turns_skipped_this_game = 0
+            agent.behavior_counts = {'buy': 0, 'sell': 0, 'roll': 0, 'level': 0, 'end_turn': 0}
+
+
+
+    def get_ghost_board(self):
+        if not self.dead:
+            return []
+        most_recent_dead_agent = list(self.dead.keys())[-1]
+        return most_recent_dead_agent.board
+
 
     def roll_shop(self, tier):
         pool = [m for m in MINION_POOL if m.tier <= tier]
@@ -68,14 +88,23 @@ class TinyBattlegroundsEnv:
         if agent.gold >= upgrade_cost:
             actions.append("level")
 
-        for idx, minion in enumerate(agent.shop):
-            if agent.gold >= 3 and len(agent.board) < 7:
-                actions.append(f"buy_{idx}")
+        if agent.shop:
+            for idx, minion in enumerate(agent.shop):
+                if agent.gold >= 3 and len(agent.board) < 7:
+                    actions.append(f"buy_{idx}")
 
         if agent.gold >= 1:
             actions.append("roll")
 
+        if agent.board:
+            for idx, minion in enumerate(agent.board):
+                actions.append(f"sell_{idx}")
+
+        # 🔥 Always allow ending turn
+        actions.append("end_turn")
+
         return actions
+
 
     def matchmaking(self, alive_agents):
         pairs = []
@@ -83,43 +112,64 @@ class TinyBattlegroundsEnv:
         if len(alive_agents) % 2 == 1:
             ghost_fighter = alive_agents.pop()
             pairs.append((ghost_fighter, 'ghost'))
-
         for i in range(0, len(alive_agents), 2):
-            pairs.append((alive_agents[i], alive_agents[i + 1]))
-
+            pairs.append((alive_agents[i], alive_agents[i+1]))
         return pairs
+
 
     def simulate_combat(self, attacker, defender):
         attacker_strength = sum(m.strength() for m in attacker.board)
+
+        # Prepare defender info
         if defender == 'ghost':
-            defender_strength = sum(m.strength() for m in self.ghost_board) if self.ghost_board else 0
+            if self.latest_dead_agent:
+                defender_strength = sum(m.strength() for m in self.latest_dead_agent.board)
+                defender_alive_minions = self.latest_dead_agent.board
+                defender_tier = self.latest_dead_agent.tier
+                defender_real = False
+            else:
+                defender_strength = 0
+                defender_alive_minions = []
+                defender_tier = 1
+                defender_real = False
         else:
             defender_strength = sum(m.strength() for m in defender.board)
+            defender_alive_minions = defender.board
+            defender_tier = defender.tier
+            defender_real = True
 
+        # ⚔️ Decide fight outcome
         if attacker_strength > defender_strength:
-            attacker.cumulative_reward += 2.0  # Reward for winning combat
-            if defender != 'ghost':
-                defender.cumulative_reward -= 1.0  # Penalty for losing combat
+            attacker.cumulative_reward += 2.0
+            if defender_real:
+                defender.cumulative_reward -= 1.0
+                damage = attacker.tier + sum(m.tier for m in attacker.board)
+                defender.health -= max(damage, 1)
 
         elif attacker_strength < defender_strength:
-            attacker.cumulative_reward -= 1.0  # Penalty for losing combat
-            if defender != 'ghost':
-                defender.cumulative_reward += 2.0  # Reward for winning combat
+            attacker.cumulative_reward -= 1.0
+            if defender_real:
+                defender.cumulative_reward += 2.0
+                damage = defender_tier + sum(m.tier for m in defender_alive_minions)
+                attacker.health -= max(damage, 1)
 
         else:
-            attacker.cumulative_reward += 0.5  # Small reward for tying
-            if defender != 'ghost':
-                defender.cumulative_reward += 0.5  # Small reward for tying
+            attacker.cumulative_reward += 0.5
+            if defender_real:
+                defender.cumulative_reward += 0.5
+            # No health loss on tie
 
 
 
     def remove_dead(self):
         for agent in self.agents:
             if agent.alive and agent.health <= 0:
+                agent.health = max(agent.health, 0)  # ← Cap it!
                 agent.alive = False
                 self.dead[agent] = self.turn
-                if not self.ghost_board or random.random() < 0.5:
-                    self.ghost_board = list(agent.board)
+
+
+
 
     def build_state_for_agent(self, agent):
         gold = agent.gold
@@ -153,62 +203,99 @@ class TinyBattlegroundsEnv:
             if not agent.alive:
                 continue
 
-            # Shop Phase
             agent.gold = min(agent.gold + 1, 10)
             agent.shop = self.roll_shop(agent.tier)
 
             while agent.gold > 0:
                 state = self.build_state_for_agent(agent)
-                action_idx = agent.act(state)  # Choose action
                 available_actions = self.get_available_actions(agent)
 
                 if not available_actions:
-                    break
+                    available_actions = ["end_turn"]
+
+                action_idx = agent.act(state)
                 action_str = available_actions[action_idx % len(available_actions)]
 
-                if action_str == "level":
+                if hasattr(agent, "behavior_counts"):
+                    for key in agent.behavior_counts:
+                        if action_str.startswith(key):
+                            # print(f"[DEBUG] {agent.name} chose action '{action_str}', matching '{key}'")
+                            agent.behavior_counts[key] += 1
+
+
+                if action_str == "end_turn":
+                    if agent.gold > 5:
+                        agent.turns_skipped_this_game += 1
+                    break
+
+                elif action_str == "level":
                     cost = self.get_upgrade_cost(agent.tier)
                     if agent.gold >= cost:
                         agent.gold -= cost
                         agent.tier = min(agent.tier + 1, 3)
-                        agent.cumulative_reward += 2.0  # Reward for leveling
+                        agent.cumulative_reward += 2.0
+                        agent.gold_spent_this_game += cost
 
                 elif action_str.startswith("buy_"):
                     idx = int(action_str.split("_")[1])
                     if idx < len(agent.shop) and agent.gold >= 3 and len(agent.board) < 7:
                         agent.gold -= 3
                         agent.board.append(agent.shop.pop(idx))
-                        agent.cumulative_reward += 1.0  # Reward for buying a minion
+                        agent.cumulative_reward += 1.0
+                        agent.minions_bought_this_game += 1
 
                 elif action_str == "roll":
                     if agent.gold >= 1:
                         agent.gold -= 1
                         agent.shop = self.roll_shop(agent.tier)
-                        # No reward for rolling, can add if needed
+                        agent.gold_spent_this_game += 1
 
-            # Combat Phase
-            alive_agents = [a for a in self.agents if a.alive]
-            pairs = self.matchmaking(alive_agents)
+                elif action_str.startswith("sell_"):
+                    idx = int(action_str.split("_")[1])
+                    if idx < len(agent.board):
+                        sold_minion = agent.board.pop(idx)
+                        agent.gold += 1
+                        agent.cumulative_reward += 0.5
 
-            for p1, p2 in pairs:
-                if p1.alive:
-                    self.simulate_combat(p1, p2)
-                if p2 != 'ghost' and p2.alive:
-                    self.simulate_combat(p2, p1)
+        # ⚔️ --- COMBAT PHASE ---
+        alive_agents = [a for a in self.agents if a.alive]
+        pairs = self.matchmaking(alive_agents)
 
-            self.remove_dead()
+        for p1, p2 in pairs:
+            self.simulate_combat(p1, p2)
+
+        self.remove_dead()
+
+
 
 
 
     def play_game(self):
         self.setup()
-        while sum(1 for agent in self.agents if agent.alive) > 1 and self.turn <= 50:
+        while sum(1 for agent in self.agents if agent.alive) > 1 and self.turn <= 100:
             self.step()
             self.turn += 1
 
         for agent in self.agents:
             if agent.alive and agent not in self.dead:
                 self.dead[agent] = self.turn
+            if not hasattr(agent, 'gold_spent_history'):
+                agent.gold_spent_history = []
+                agent.minions_bought_history = []
+                agent.turns_skipped_history = []
+
+            agent.gold_spent_history.append(agent.gold_spent_this_game)
+            agent.minions_bought_history.append(agent.minions_bought_this_game)
+            agent.turns_skipped_history.append(agent.turns_skipped_this_game)
+
+
+        # print("Final Dead Map:", {agent.name: turn for agent, turn in self.dead.items()})
+
+        # print("\nFinal Boards at Turn Limit:")
+        # for agent in self.agents:
+        #     board_desc = [str(m) for m in agent.board]
+        #     print(f"{agent.name} (Alive: {agent.alive}, Health: {agent.health}): Board -> {board_desc}")
+
 
         return self.calculate_rewards()
 
@@ -250,34 +337,107 @@ class TinyBattlegroundsEnv:
         return rewards
 
 
-def batch_train(num_batches=100, games_per_batch=10, print_every=10):
-    agents = [SelfLearningAgent(input_size=9, action_size=5, name=f"Bot_{i}") for i in range(8)]
-    mmr_history = []
+def batch_train(num_batches=100, games_per_batch=20, print_every=10, save_every=5):
+    os.makedirs("saved_models", exist_ok=True)  # 🧠 Make sure the folder exists
 
-    # Create the environment here
+    agents = [SelfLearningAgent(input_size=9, action_size=5, name=f"Bot_{i}") for i in range(8)]
+    for agent in agents:
+        agent.mmr = 0  # MMR initialized
+
+    avg_mmr_history = []
+    max_mmr_history = []
     env = TinyBattlegroundsEnv(agents)
 
-    for batch in range(num_batches):
-        total_rewards = {agent.name: 0 for agent in agents}
+    try:
+        for batch in range(num_batches):
+            for game in range(games_per_batch):
+                env.setup()
+                rewards = env.play_game()
 
-        for game in range(games_per_batch):
-            env.setup()  # Reset game state for each batch
-            rewards = env.play_game()
+                winner = max(rewards.items(), key=lambda x: x[1])[0]
+                # print(f"Game {game+1}: Winner -> {winner}")
 
-            for agent in agents:
-                agent.learn(rewards[agent.name])
-                total_rewards[agent.name] += rewards[agent.name]
+                for agent in agents:
+                    agent.learn(rewards[agent.name])
+                    agent.mmr += rewards[agent.name]
 
-        avg_mmr = sum(total_rewards.values()) / len(agents)
-        mmr_history.append(avg_mmr)
+            avg_mmr = sum(agent.mmr for agent in agents) / len(agents)
+            max_mmr = max(agent.mmr for agent in agents)
 
-        if (batch + 1) % print_every == 0:
-            print(f"Batch {batch + 1}: Average MMR = {avg_mmr:.2f}")
-            for agent in agents:
-                state = env.build_state_for_agent(agent)  # Use the env instance here
-                plot_action_probabilities(agent, state)
+            avg_mmr_history.append(avg_mmr)
+            max_mmr_history.append(max_mmr)
 
-    return mmr_history
+            if (batch + 1) % print_every == 0:
+                print(f"Batch {batch + 1}: Average MMR = {avg_mmr:.0f}, Highest MMR = {max_mmr:.0f}")
+
+            # 🧠 Save top agent model every `save_every` batches
+            if (batch + 1) % save_every == 0:
+                top_agent = max(agents, key=lambda a: a.mmr)
+                save_data = {
+                    "agent_name": top_agent.name,
+                    "batch": batch + 1,
+                    "mmr": top_agent.mmr,
+                    "policy_state_dict": top_agent.policy.state_dict(),
+                }
+                torch.save(save_data, f"saved_models/agent_{top_agent.name}_batch{batch+1}.pt")
+                print(f"✅ Saved {top_agent.name} after Batch {batch+1}")
+
+    except KeyboardInterrupt:
+        print("\n🚨 Training interrupted by user! Saving latest models...")
+        for agent in agents:
+            save_data = {
+                "agent_name": agent.name,
+                "batch": batch + 1,
+                "mmr": agent.mmr,
+                "policy_state_dict": agent.policy.state_dict(),
+            }
+            torch.save(save_data, f"saved_models/agent_{agent.name}_batch{batch+1}_INTERRUPTED.pt")
+        print("✅ All agents saved.")
+
+    return avg_mmr_history, max_mmr_history, env
+
+
+
+def plot_behavior(agents):
+    for agent in agents:
+        plt.plot(agent.gold_spent_history, label=f"{agent.name} Gold Spent")
+    plt.xlabel("Game")
+    plt.ylabel("Gold Spent")
+    plt.title("Gold Spent Over Games")
+    plt.legend()
+    plt.show()
+
+    for agent in agents:
+        plt.plot(agent.minions_bought_history, label=f"{agent.name} Minions Bought")
+    plt.xlabel("Game")
+    plt.ylabel("Minions Bought")
+    plt.title("Minions Bought Over Games")
+    plt.legend()
+    plt.show()
+
+    for agent in agents:
+        plt.plot(agent.turns_skipped_history, label=f"{agent.name} Early End Turns")
+    plt.xlabel("Game")
+    plt.ylabel("Early End Turns")
+    plt.title("Early End Turns Over Games")
+    plt.legend()
+    plt.show()
+
+
+def print_behavior(agents):
+    print("\n=== Agent Behavior Summary ===")
+    for agent in agents:
+        counts = agent.behavior_counts
+        total = sum(counts.values())
+
+        if total == 0:
+            print(f"{agent.name}: No actions recorded yet.")
+            continue
+
+        print(f"\n{agent.name}:")
+        for action, count in counts.items():
+            percentage = (count / total) * 100
+            print(f"  {action}: {count} times ({percentage:.1f}%)")
 
 
 def plot_action_probabilities(agent, state):
@@ -295,14 +455,19 @@ def plot_action_probabilities(agent, state):
 
 
 
-def plot_mmr_history(mmr_history):
-    plt.plot(mmr_history)
+def plot_mmr_history(avg_mmr_history, max_mmr_history):
+    plt.plot(avg_mmr_history, label='Average MMR')
+    plt.plot(max_mmr_history, label='Highest MMR', linestyle='--')
     plt.xlabel('Batch')
-    plt.ylabel('Average MMR')
+    plt.ylabel('MMR')
     plt.title('Agent Learning Curve')
     plt.grid()
+    plt.legend()
     plt.show()
 
+
 if __name__ == "__main__":
-    mmr_history = batch_train(num_batches=100, games_per_batch=10, print_every=10)
-    plot_mmr_history(mmr_history)
+    avg_mmr_history, max_mmr_history, env = batch_train(num_batches=50, games_per_batch=20, print_every=5)
+    plot_mmr_history(avg_mmr_history, max_mmr_history)
+
+    # plot_behavior(env.agents)

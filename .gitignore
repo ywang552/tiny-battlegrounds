@@ -1,0 +1,29 @@
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+
+# Ignore temporary logs
+*.log
+
+# Ignore model checkpoints
+saved_models/
+checkpoints/
+*.pt
+*.pth
+
+# Ignore data files (if any)
+*.csv
+*.dat
+*.npy
+
+# Ignore environment files
+.env
+.venv/
+venv/
+
+# Ignore Jupyter Notebook checkpoints (if you use any)
+.ipynb_checkpoints/
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db

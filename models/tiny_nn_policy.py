@@ -38,6 +38,15 @@ class SelfLearningAgent:
         self.memory = []
         self.cumulative_reward = 0.0
 
+        self.behavior_counts = {
+            'buy': 0,
+            'sell': 0,
+            'roll': 0,
+            'level': 0,
+            'end_turn': 0,
+        }
+
+
     def act(self, state):
         action, probs = self.policy.predict_action(state)
         log_prob = torch.log(probs[action])
@@ -49,10 +58,14 @@ class SelfLearningAgent:
             return  # No actions taken, skip learning step
 
         total_reward = self.cumulative_reward + final_game_reward
-        loss = []
 
-        for log_prob in self.memory:
-            loss.append(-log_prob * total_reward)
+        # 🟰 Reward normalization (tiny trick)
+        rewards = torch.tensor([total_reward for _ in self.memory])
+        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)  # Add small epsilon to avoid divide-by-zero
+
+        loss = []
+        for log_prob, reward in zip(self.memory, rewards):
+            loss.append(-log_prob * reward)
         loss = torch.stack(loss).sum()
 
         self.optimizer.zero_grad()
@@ -61,6 +74,7 @@ class SelfLearningAgent:
 
         self.memory = []  # Reset memory
         self.cumulative_reward = 0.0  # Reset cumulative reward
+
 
 
     def visualize_policy(self, state):
