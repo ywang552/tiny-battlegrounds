@@ -1,0 +1,627 @@
+[
+  {
+    "name": "Alleycat",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 1,
+    "attack": 2,
+    "health": 3,
+    "keywords": []
+  },
+  {
+    "name": "Buzzing Vermin",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 1,
+    "attack": 2,
+    "health": 3,
+    "keywords": []
+  },
+  {
+    "name": "Manasaber",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 1,
+    "attack": 2,
+    "health": 3,
+    "keywords": []
+  },
+  {
+    "name": "Forest Rover",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 2,
+    "attack": 3,
+    "health": 5,
+    "keywords": []
+  },
+  {
+    "name": "Humming Bird",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 2,
+    "attack": 3,
+    "health": 5,
+    "keywords": []
+  },
+  {
+    "name": "Hungry Snapjaw",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 2,
+    "attack": 3,
+    "health": 5,
+    "keywords": []
+  },
+  {
+    "name": "Sharptooth Snapper",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 2,
+    "attack": 3,
+    "health": 5,
+    "keywords": []
+  },
+  {
+    "name": "Monstrous Macaw",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 3,
+    "attack": 4,
+    "health": 7,
+    "keywords": []
+  },
+  {
+    "name": "Sprightly Scarab",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 3,
+    "attack": 4,
+    "health": 7,
+    "keywords": []
+  },
+  {
+    "name": "Cave Hydra",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 4,
+    "attack": 5,
+    "health": 9,
+    "keywords": []
+  },
+  {
+    "name": "Gentle Stag",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 4,
+    "attack": 5,
+    "health": 9,
+    "keywords": []
+  },
+  {
+    "name": "Rylak Metalhead",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 4,
+    "attack": 5,
+    "health": 9,
+    "keywords": []
+  },
+  {
+    "name": "Turquoise Skitterer",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 4,
+    "attack": 5,
+    "health": 9,
+    "keywords": []
+  },
+  {
+    "name": "Valiant Tiger",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 4,
+    "attack": 5,
+    "health": 9,
+    "keywords": []
+  },
+  {
+    "name": "Runed Progenitor",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 5,
+    "attack": 6,
+    "health": 11,
+    "keywords": []
+  },
+  {
+    "name": "Silithid Burrower",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 5,
+    "attack": 6,
+    "health": 11,
+    "keywords": []
+  },
+  {
+    "name": "Sinrunner Blanchy",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 5,
+    "attack": 6,
+    "health": 11,
+    "keywords": []
+  },
+  {
+    "name": "Arid Atrocity",
+    "tribes": [
+      "Demon",
+      "Dragon",
+      "Beast"
+    ],
+    "tier": 6,
+    "attack": 7,
+    "health": 13,
+    "keywords": []
+  },
+  {
+    "name": "Hawkstrider Herald",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 6,
+    "attack": 7,
+    "health": 13,
+    "keywords": []
+  },
+  {
+    "name": "Indomitable Mount",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 6,
+    "attack": 7,
+    "health": 13,
+    "keywords": []
+  },
+  {
+    "name": "Nightmare Par-tea Guest",
+    "tribes": [
+      "Demon",
+      "Dragon",
+      "Beast"
+    ],
+    "tier": 6,
+    "attack": 7,
+    "health": 13,
+    "keywords": []
+  },
+  {
+    "name": "Silky Shimmermoth",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 6,
+    "attack": 7,
+    "health": 13,
+    "keywords": []
+  },
+  {
+    "name": "Bellowing Tyrant",
+    "tribes": [
+      "Beast"
+    ],
+    "tier": 7,
+    "attack": 8,
+    "health": 15,
+    "keywords": []
+  },
+  {
+    "name": "Ominous Seer",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 1,
+    "attack": 2,
+    "health": 3,
+    "keywords": []
+  },
+  {
+    "name": "Picky Eater",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 1,
+    "attack": 2,
+    "health": 3,
+    "keywords": []
+  },
+  {
+    "name": "Impulsive Trickster",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 2,
+    "attack": 3,
+    "health": 5,
+    "keywords": []
+  },
+  {
+    "name": "Mind Muck",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 2,
+    "attack": 3,
+    "health": 5,
+    "keywords": []
+  },
+  {
+    "name": "Soul Rewinder",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 2,
+    "attack": 3,
+    "health": 5,
+    "keywords": []
+  },
+  {
+    "name": "False Implicator",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 3,
+    "attack": 4,
+    "health": 7,
+    "keywords": []
+  },
+  {
+    "name": "Felemental",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 3,
+    "attack": 4,
+    "health": 7,
+    "keywords": []
+  },
+  {
+    "name": "Floating Watcher",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 3,
+    "attack": 4,
+    "health": 7,
+    "keywords": []
+  },
+  {
+    "name": "Keyboard Igniter",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 3,
+    "attack": 4,
+    "health": 7,
+    "keywords": []
+  },
+  {
+    "name": "Ashen Corruptor",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 4,
+    "attack": 5,
+    "health": 9,
+    "keywords": []
+  },
+  {
+    "name": "Bounding Felstalker",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 4,
+    "attack": 5,
+    "health": 9,
+    "keywords": []
+  },
+  {
+    "name": "Imposing Percussionist",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 4,
+    "attack": 5,
+    "health": 9,
+    "keywords": []
+  },
+  {
+    "name": "Malchezaar, Prince of Dance",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 4,
+    "attack": 5,
+    "health": 9,
+    "keywords": []
+  },
+  {
+    "name": "Batty Terrorguard",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 5,
+    "attack": 6,
+    "health": 11,
+    "keywords": []
+  },
+  {
+    "name": "Felfire Conjurer",
+    "tribes": [
+      "Demon",
+      "Dragon"
+    ],
+    "tier": 5,
+    "attack": 6,
+    "health": 11,
+    "keywords": []
+  },
+  {
+    "name": "Shadowdancer",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 5,
+    "attack": 6,
+    "health": 11,
+    "keywords": []
+  },
+  {
+    "name": "Tardy Traveler",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 5,
+    "attack": 6,
+    "health": 11,
+    "keywords": []
+  },
+  {
+    "name": "Dream Inquisitor",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 6,
+    "attack": 7,
+    "health": 13,
+    "keywords": []
+  },
+  {
+    "name": "Famished Felbat",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 6,
+    "attack": 7,
+    "health": 13,
+    "keywords": []
+  },
+  {
+    "name": "Mecha-Jaraxxus",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 6,
+    "attack": 7,
+    "health": 13,
+    "keywords": []
+  },
+  {
+    "name": "Champion of Sargeras",
+    "tribes": [
+      "Demon"
+    ],
+    "tier": 7,
+    "attack": 8,
+    "health": 15,
+    "keywords": []
+  },
+  {
+    "name": "Dozy Whelp",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 1,
+    "attack": 2,
+    "health": 3,
+    "keywords": []
+  },
+  {
+    "name": "Misfit Dragonling",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 1,
+    "attack": 2,
+    "health": 3,
+    "keywords": []
+  },
+  {
+    "name": "Blazing Skyfin",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 2,
+    "attack": 3,
+    "health": 5,
+    "keywords": []
+  },
+  {
+    "name": "Low-Flier",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 2,
+    "attack": 3,
+    "health": 5,
+    "keywords": []
+  },
+  {
+    "name": "Thousandth Paper Drake",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 2,
+    "attack": 3,
+    "health": 5,
+    "keywords": []
+  },
+  {
+    "name": "Amber Guardian",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 3,
+    "attack": 4,
+    "health": 7,
+    "keywords": []
+  },
+  {
+    "name": "Roaring Rallier",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 3,
+    "attack": 4,
+    "health": 7,
+    "keywords": []
+  },
+  {
+    "name": "Tarecgosa",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 3,
+    "attack": 4,
+    "health": 7,
+    "keywords": []
+  },
+  {
+    "name": "Greenskeeper",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 4,
+    "attack": 5,
+    "health": 9,
+    "keywords": []
+  },
+  {
+    "name": "Persistent Poet",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 4,
+    "attack": 5,
+    "health": 9,
+    "keywords": []
+  },
+  {
+    "name": "Prized Promo-Drake",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 4,
+    "attack": 5,
+    "health": 9,
+    "keywords": []
+  },
+  {
+    "name": "Bronze Steward",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 5,
+    "attack": 6,
+    "health": 11,
+    "keywords": []
+  },
+  {
+    "name": "Firescale Hoarder",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 5,
+    "attack": 6,
+    "health": 11,
+    "keywords": []
+  },
+  {
+    "name": "Spirited Whimsydrake",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 5,
+    "attack": 6,
+    "health": 11,
+    "keywords": []
+  },
+  {
+    "name": "Fire-forged Evoker",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 6,
+    "attack": 7,
+    "health": 13,
+    "keywords": []
+  },
+  {
+    "name": "Ignition Specialist",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 6,
+    "attack": 7,
+    "health": 13,
+    "keywords": []
+  },
+  {
+    "name": "Kalecgos, Arcane Aspect",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 6,
+    "attack": 7,
+    "health": 13,
+    "keywords": []
+  },
+  {
+    "name": "Obsidian Ravager",
+    "tribes": [
+      "Dragon"
+    ],
+    "tier": 7,
+    "attack": 8,
+    "health": 15,
+    "keywords": []
+  }
+]

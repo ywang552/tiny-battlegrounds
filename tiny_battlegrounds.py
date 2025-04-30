@@ -3,15 +3,20 @@ import torch
 from models.tiny_nn_policy import SelfLearningAgent  # <-- import your self-learning agent!
 import matplotlib.pyplot as plt  # Add this at the top of your file if not imported yet
 import os
+import json
+from load import load_minions
 
-# --- Minion Class ---
+with open("data/minion_pool.json", "r") as f:
+    minion_data = json.load(f)
+
 class Minion:
-    def __init__(self, name, tribe, attack, health, tier):
+    def __init__(self, name, types, attack, health, tier, keywords=None):
         self.name = name
-        self.tribe = tribe
+        self.types = types
         self.attack = attack
         self.health = health
         self.tier = tier
+        self.keywords = set(keywords or [])
 
     def strength(self):
         return self.attack + self.health
@@ -19,19 +24,9 @@ class Minion:
     def __repr__(self):
         return f"{self.name}({self.attack}/{self.health})"
 
-# --- Minion Pool (Tiny version) ---
-MINION_POOL = [
-    Minion("Microbot", "Mech", 1, 1, 1),
-    Minion("Kaboom Bot", "Mech", 2, 2, 2),
-    Minion("Iron Sensei", "Mech", 2, 3, 2),
-    Minion("Deflect-o-Bot", "Mech", 3, 2, 3),
-    Minion("Sneed's Assistant", "Mech", 4, 3, 3),
-    Minion("Red Whelp", "Dragon", 2, 1, 1),
-    Minion("Glyph Guardian", "Dragon", 2, 4, 2),
-    Minion("Bronze Warden", "Dragon", 2, 1, 2),
-    Minion("Herald of Flame", "Dragon", 3, 5, 3),
-    Minion("Drakonid Enforcer", "Dragon", 3, 6, 3),
-]
+path = "data\\bg_minions_all.json"  # your full file
+MINION_POOL = [Minion(**data) for data in load_minions(path)]
+
 
 # --- TinyBattlegrounds Environment ---
 class TinyBattlegroundsEnv:
@@ -42,12 +37,27 @@ class TinyBattlegroundsEnv:
         self.latest_dead_agent = None
 
 
+    def get_base_upgrade_cost(self, tier):
+        upgrade_table = {
+            1: 5,
+            2: 7,
+            3: 8,
+            4: 9,
+            5: 10,
+        }
+        return upgrade_table.get(tier, float('inf'))
+
+    def get_upgrade_cost(self, agent):
+        return agent.tavern_upgrade_cost  # ✅ Use this instead of re-computing
+
+
     def setup(self):
         self.turn = 1
         self.dead = {}
         self.latest_dead_agent = None
 
         for agent in self.agents:
+            agent.gold_cap = 3
             agent.gold = 3
             agent.tier = 1
             agent.board = []
@@ -59,6 +69,9 @@ class TinyBattlegroundsEnv:
             agent.minions_bought_this_game = 0
             agent.turns_skipped_this_game = 0
             agent.behavior_counts = {'buy': 0, 'sell': 0, 'roll': 0, 'level': 0, 'end_turn': 0}
+            agent.last_cumulative_reward = 0
+            agent.tavern_upgrade_cost = self.get_base_upgrade_cost(agent.tier)  # ✅ One-time init
+
 
 
 
@@ -71,22 +84,28 @@ class TinyBattlegroundsEnv:
 
     def roll_shop(self, tier):
         pool = [m for m in MINION_POOL if m.tier <= tier]
-        return random.sample(pool, min(3, len(pool)))
 
-    def get_upgrade_cost(self, current_tier):
-        if current_tier == 1:
-            return 5
-        elif current_tier == 2:
-            return 7
+        if tier == 1:
+            slots = 3
+        elif tier in [2, 3]:
+            slots = 4
+        elif tier in [4, 5]:
+            slots = 5
+        elif tier == 6:
+            slots = 6
         else:
-            return 999
+            slots = 3  # default safety
+        
+        return random.sample(pool, min(slots, len(pool)))
+
 
     def get_available_actions(self, agent):
         actions = []
-        upgrade_cost = self.get_upgrade_cost(agent.tier)
+        upgrade_cost = self.get_upgrade_cost(agent)
 
-        if agent.gold >= upgrade_cost:
+        if agent.tier < 6 and agent.gold >= upgrade_cost:
             actions.append("level")
+
 
         if agent.shop:
             for idx, minion in enumerate(agent.shop):
@@ -148,7 +167,7 @@ class TinyBattlegroundsEnv:
 
         # ⚔️ Normal fight resolution
         if attacker_strength > defender_strength:
-            attacker.cumulative_reward += 2.0
+            attacker.cumulative_reward += 4.0
             if defender_real:
                 defender.cumulative_reward -= 1.0
                 damage = attacker.tier + sum(m.tier for m in attacker.board)
@@ -157,7 +176,7 @@ class TinyBattlegroundsEnv:
         elif attacker_strength < defender_strength:
             attacker.cumulative_reward -= 1.0
             if defender_real:
-                defender.cumulative_reward += 2.0
+                defender.cumulative_reward += 4.0
                 damage = defender_tier + sum(m.tier for m in defender_alive_minions)
                 attacker.health -= max(damage, 1)
 
@@ -205,66 +224,113 @@ class TinyBattlegroundsEnv:
 
 
 
-    def step(self):
+    def step(self, verbose=False, focus_agent_name=None):
+        
         for agent in self.agents:
             if not agent.alive:
                 continue
-
-            base_gold = min(3 + (self.turn - 1), 10)  # 3 on Turn 1, 4 on Turn 2, etc, capped at 10
-            agent.gold = base_gold
-
             agent.shop = self.roll_shop(agent.tier)
+            agent.gold_cap = min(3 + self.turn - 1, 10)
+            agent.gold = agent.gold_cap
+
+            if verbose and agent.name == focus_agent_name:
+                print(f"\n--- Turn {self.turn} ---")
+                print(f"Gold: {agent.gold}, Health: {agent.health}, Tier: {agent.tier}")
+                if agent.board:
+                    print("Board:")
+                    for m in agent.board:
+                        print(f"  {m.name} ({m.attack}/{m.health})")
+                else:
+                    print("Board: EMPTY")
+                if agent.shop:
+                    print(f"Shop of length {len(agent.shop)}:")
+                    for idx, m in enumerate(agent.shop):
+                        print(f"  [{idx}] {m.name} ({m.attack}/{m.health})")
+                else:
+                    print("Shop: EMPTY")
 
             while agent.gold > 0:
                 state = self.build_state_for_agent(agent)
                 available_actions = self.get_available_actions(agent)
 
                 if not available_actions:
-                    available_actions = ["end_turn"]
+                    break
 
                 action_idx = agent.act(state)
                 action_str = available_actions[action_idx % len(available_actions)]
 
+                reward = agent.cumulative_reward - agent.last_cumulative_reward
+                next_state = self.build_state_for_agent(agent)
+                if hasattr(agent, "observe"):
+                    agent.observe(next_state, reward)
+
+
                 if hasattr(agent, "behavior_counts"):
                     for key in agent.behavior_counts:
                         if action_str.startswith(key):
-                            # print(f"[DEBUG] {agent.name} chose action '{action_str}', matching '{key}'")
                             agent.behavior_counts[key] += 1
 
+                if verbose and agent.name == focus_agent_name:
+                    print(f"Action chosen: {action_str}")
 
                 if action_str == "end_turn":
                     if agent.gold > 5:
                         agent.turns_skipped_this_game += 1
+                    if verbose and agent.name == focus_agent_name:
+                        print(">> Ending turn early.")
                     break
 
-                elif action_str == "level":
-                    cost = self.get_upgrade_cost(agent.tier)
+                if action_str == "level":
+                    cost = agent.tavern_upgrade_cost
+
                     if agent.gold >= cost:
                         agent.gold -= cost
-                        agent.tier = min(agent.tier + 1, 3)
-                        agent.cumulative_reward += 3.0  # ✨ Reward leveling
+                        agent.tier += 1
+                        agent.tavern_upgrade_cost = self.get_base_upgrade_cost(agent.tier)  # reset to new tier base
+                        agent.cumulative_reward += 2.0
                         agent.gold_spent_this_game += cost
+                        if verbose and agent.name == focus_agent_name:
+                            print(f">> Upgraded to Tier {agent.tier}.")
+                    continue
 
-                elif action_str.startswith("buy_"):
+
+                if action_str.startswith("buy_"):
                     idx = int(action_str.split("_")[1])
                     if idx < len(agent.shop) and agent.gold >= 3 and len(agent.board) < 7:
+                        bought_minion = agent.shop[idx]
                         agent.gold -= 3
                         agent.board.append(agent.shop.pop(idx))
-                        agent.cumulative_reward += 2.0  # ✨ Reward buying
+                        agent.cumulative_reward += 1.0
                         agent.minions_bought_this_game += 1
+                        if verbose and agent.name == focus_agent_name:
+                            print(f">> Bought {bought_minion.name} ({bought_minion.attack}/{bought_minion.health})")
+                    continue
 
-                elif action_str == "roll":
+                if action_str == "roll":
                     if agent.gold >= 1:
                         agent.gold -= 1
                         agent.shop = self.roll_shop(agent.tier)
                         agent.gold_spent_this_game += 1
+                        if verbose and agent.name == focus_agent_name:
+                            print(f">> Rolled new shop.")
+                    continue
 
-                elif action_str.startswith("sell_"):
+                if action_str.startswith("sell_"):
                     idx = int(action_str.split("_")[1])
                     if idx < len(agent.board):
+                        sold_minion = agent.board.pop(idx)
                         agent.gold += 1
-                        agent.board.pop(idx)
-                        agent.cumulative_reward += 0.5  # Optional small reward for selling
+                        agent.cumulative_reward += 0.5
+                        if verbose and agent.name == focus_agent_name:
+                            print(f">> Sold {sold_minion.name} ({sold_minion.attack}/{sold_minion.health})")
+                    continue
+
+        
+        for agent in self.agents:
+            old_cost = agent.tavern_upgrade_cost
+            agent.tavern_upgrade_cost = max(agent.tavern_upgrade_cost - 1, 0)
+            if verbose and agent.name == focus_agent_name:
+                print(f"[Turn {self.turn}] {agent.name} (Tier {agent.tier}) upgrade cost: {old_cost} → {agent.tavern_upgrade_cost}")
 
 
         # ⚔️ --- COMBAT PHASE ---
@@ -280,36 +346,23 @@ class TinyBattlegroundsEnv:
 
 
 
-    def play_game(self, reset_mmr=False):
+
+    def play_game(self, verbose=False, focus_agent_name=None):
         self.setup()
+
         while sum(1 for agent in self.agents if agent.alive) > 1 and self.turn <= 100:
-            self.step()
+            self.step(verbose=verbose, focus_agent_name=focus_agent_name)
             self.turn += 1
 
+        # ✅ After game ends, fix final survivors who never died
         for agent in self.agents:
             if agent.alive and agent not in self.dead:
                 self.dead[agent] = self.turn
-            if not hasattr(agent, 'gold_spent_history'):
-                agent.gold_spent_history = []
-                agent.minions_bought_history = []
-                agent.turns_skipped_history = []
 
-            agent.gold_spent_history.append(agent.gold_spent_this_game)
-            agent.minions_bought_history.append(agent.minions_bought_this_game)
-            agent.turns_skipped_history.append(agent.turns_skipped_this_game)
-
-        rewards = self.calculate_rewards()
-
-        # ✨ Correct flexible MMR update
-        for agent in self.agents:
-            if reset_mmr:
-                agent.mmr = rewards.get(agent.name, 0)
-            else:
-                agent.mmr += rewards.get(agent.name, 0)
-
+            # ✅ Clamp MMR to be non-negative
             agent.mmr = max(0, agent.mmr)
 
-        return rewards
+        return self.calculate_rewards()
 
 
 
@@ -346,9 +399,13 @@ class TinyBattlegroundsEnv:
             average_reward = reward_sum / tied_size
             for agent, _ in tied_group:
                 rewards[agent.name] = average_reward
+                agent.mmr += average_reward  # ✅ Apply reward
+                agent.mmr = max(0, agent.mmr)  # ✅ Clamp here after adding
+
             current_place -= tied_size
 
         return rewards
+
 
 
 def batch_train(num_batches=100, games_per_batch=20, print_every=10, save_every=5):

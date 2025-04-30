@@ -37,42 +37,103 @@ class TinyNNPolicy(nn.Module):
         return action.item(), probs
 
 
+class TinyValueNet(nn.Module):
+    def __init__(self, input_size):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)  # outputs a scalar V(s)
+        )
+
+    def forward(self, x):
+        return self.net(x).squeeze(-1)  # shape: [batch] or scalar
+
+
+
 class SelfLearningAgent:
     def __init__(self, input_size, action_size, lr=1e-3, name="Agent", ancestor=None):
         self.name = name
         self.policy = TinyNNPolicy(input_size, action_size)
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
+        self.value_net = TinyValueNet(input_size)
+        self.optimizer = optim.Adam(
+            list(self.policy.parameters()) + list(self.value_net.parameters()), lr=lr
+        )
         self.lr = lr
-        self.memory = []
+        self.memory = []  # stores (state, action, reward, next_state)
         self.mmr = 0.0
-        self.ancestor = ancestor if ancestor is not None else name  # ✨ Track genealogy
+        self.cumulative_reward = 0.0
+        self.last_cumulative_reward = 0.0
+        self.ancestor = ancestor if ancestor is not None else name
 
     def act(self, state):
         action, probs = self.policy.predict_action(state)
         log_prob = torch.log(probs[action])
-        self.memory.append(log_prob)
+        value = self.value_net(state)
+
+        # Store log_prob, value, and current state
+        self.memory.append({
+            "state": state.detach(),
+            "action": action,
+            "log_prob": log_prob,
+            "value": value,
+            # note: next_state and reward added later
+        })
+        self.last_cumulative_reward = self.cumulative_reward
         return action
 
-    def learn(self, final_reward):
+    def observe(self, next_state, reward):
+        # Add next_state and reward to the latest memory entry
+        if self.memory:
+            self.memory[-1]["next_state"] = next_state.detach()
+            self.memory[-1]["reward"] = reward
+
+    def learn(self, final_mmr):
         if not self.memory:
             return
 
-        rewards = torch.tensor([final_reward for _ in self.memory])
-        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+        gamma = 0.95
+        λ = 0.1
 
-        loss = torch.stack([-log_prob * reward for log_prob, reward in zip(self.memory, rewards)]).sum()
+        policy_losses = []
+        value_losses = []
+
+        for entry in self.memory:
+            r = entry["reward"] + λ * final_mmr
+            s = entry["state"]
+            s_ = entry["next_state"]
+            a = entry["action"]
+            log_prob = entry["log_prob"]
+            value = entry["value"]
+
+            with torch.no_grad():
+                next_value = self.value_net(s_)
+
+            # Advantage
+            advantage = (r + gamma * next_value) - value
+
+            # Losses
+            policy_losses.append(-log_prob * advantage.detach())
+            value_losses.append(advantage.pow(2))
+
+        loss = torch.stack(policy_losses).sum() + 0.5 * torch.stack(value_losses).sum()
+
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-        self.memory = []
+        self.memory.clear()
 
     def mutate(self, max_mmr):
-        base_strength = 0.02
+        base_strength = 0.05
         mutation_strength = base_strength * (1 + (max_mmr - self.mmr) / (max_mmr + 1e-8))
 
         with torch.no_grad():
             for param in self.policy.parameters():
+                param.add_(mutation_strength * torch.randn_like(param))
+            for param in self.value_net.parameters():
                 param.add_(mutation_strength * torch.randn_like(param))
 
         if random.random() < 0.5:
@@ -81,10 +142,16 @@ class SelfLearningAgent:
                 param_group['lr'] = self.lr
 
     def save(self, filepath):
-        torch.save(self.policy.state_dict(), filepath)
+        torch.save({
+            "policy": self.policy.state_dict(),
+            "value_net": self.value_net.state_dict()
+        }, filepath)
 
     def load(self, filepath):
-        self.policy.load_state_dict(torch.load(filepath))
+        data = torch.load(filepath)
+        self.policy.load_state_dict(data["policy"])
+        self.value_net.load_state_dict(data["value_net"])
+
 
 # ===== Core Functions =====
 def exploit_explore(agents, genealogy_graph, top_k=5, replace_fraction=0.2):
@@ -106,7 +173,7 @@ def exploit_explore(agents, genealogy_graph, top_k=5, replace_fraction=0.2):
 
     print(f"🔁 Mid-gen replace: {num_to_replace} agents refreshed from Top-{top_k}")
 
-def evolve_population(agents, genealogy_graph, generation, inject_every=5, inject_fraction=0.1):
+def evolve_population(agents, genealogy_graph, generation, inject_every=5, inject_fraction=0.2):
     agents.sort(key=lambda x: x.mmr, reverse=True)
     survivors = agents[:len(agents) // 2]
 
@@ -144,14 +211,19 @@ def tournament_generation(agents, genealogy_graph, games_per_agent=5, generation
     halfway = games_per_agent // 2
 
     for _ in range(halfway):
-        env.play_game(reset_mmr=False)
+        env.play_game()
+        for agent in agents:
+            agent.learn(agent.mmr)
 
     exploit_explore(agents, genealogy_graph)
 
     for _ in range(games_per_agent - halfway):
-        env.play_game(reset_mmr=False)
+        env.play_game()
+        for agent in agents:
+            agent.learn(agent.mmr)
 
     return evolve_population(agents, genealogy_graph, generation=generation_num)
+
 
 # ===== Main Runner =====
 def main():
