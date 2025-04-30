@@ -13,6 +13,36 @@ from tiny_battlegrounds import TinyBattlegroundsEnv
 # ===== Create folders if not exist =====
 os.makedirs("saved_models", exist_ok=True)
 
+
+SAMPLE_STATE = torch.tensor([
+    0, 10, 5, 20, 9,
+    140, 7,
+    4, 4, 5, 3, 2, 0,
+    20, 5, 120,
+    0, 0, 0, 0
+], dtype=torch.float32)
+
+SAMPLE_STATE_WEAK = torch.tensor([
+    6, 10, 3, 10, 8,         # gold, gold_cap, tier, health, turn
+    9, 3,                   # board_strength, num_minions
+    2, 1, 3, 0, 0, 0,        # shop slots
+    15, 5, 70,               # prev_health, delta, enemy_strength
+    0, 0, 0, 0                    # reserved
+], dtype=torch.float32)
+
+SAMPLE_STATE_WEAK2 = torch.tensor([
+    0, 10, 3, 10, 8,         # gold, gold_cap, tier, health, turn
+    0, 0,                   # board_strength, num_minions
+    2, 1, 3, 0, 0, 0,        # shop slots
+    15, 5, 70,               # prev_health, delta, enemy_strength
+    0, 0, 0, 0                    # reserved
+], dtype=torch.float32)
+
+
+V_HISTORY = []
+V_HISTORY_WEAK = []
+V_HISTORY_WEAK2 = []
+
 # ===== Models =====
 class TinyNNPolicy(nn.Module):
     def __init__(self, input_size, action_size):
@@ -64,8 +94,6 @@ class SelfLearningAgent:
         self.lr = lr
         self.memory = []  # stores (state, action, reward, next_state)
         self.mmr = 0.0
-        self.cumulative_reward = 0.0
-        self.last_cumulative_reward = 0.0
         self.ancestor = ancestor if ancestor is not None else name
 
     def act(self, state):
@@ -81,7 +109,6 @@ class SelfLearningAgent:
             "value": value,
             # note: next_state and reward added later
         })
-        self.last_cumulative_reward = self.cumulative_reward
         return action
 
     def observe(self, next_state, reward):
@@ -181,7 +208,7 @@ def evolve_population(agents, genealogy_graph, generation, inject_every=5, injec
     max_mmr = max(agent.mmr for agent in agents)
 
     for survivor in survivors:
-        cloned = SelfLearningAgent(9, 5, lr=survivor.lr, name=f"{survivor.name}_clone", ancestor=survivor.ancestor)
+        cloned = SelfLearningAgent(20, 5, lr=survivor.lr, name=f"{survivor.name}_clone", ancestor=survivor.ancestor)
         cloned.policy.load_state_dict(survivor.policy.state_dict())
         cloned.mutate(max_mmr)
         new_agents.append(survivor)
@@ -193,7 +220,7 @@ def evolve_population(agents, genealogy_graph, generation, inject_every=5, injec
     if generation % inject_every == 0:
         num_inject = int(len(new_agents) * inject_fraction)
         for _ in range(num_inject):
-            fresh_agent = SelfLearningAgent(9, 5, name=f"Random_{generation}_{random.randint(0,9999)}")
+            fresh_agent = SelfLearningAgent(20, 5, name=f"Random_{generation}_{random.randint(0,9999)}")
             new_agents[-1] = fresh_agent
 
     # ✨ Genealogy Report
@@ -230,16 +257,26 @@ def main():
     random.seed(42)
     torch.manual_seed(42)
 
-    agents = [SelfLearningAgent(9, 5, name=f"Bot_{i}") for i in range(32)]
+    agents = [SelfLearningAgent(20, 5, name=f"Bot_{i}") for i in range(32)]
     genealogy_graph = nx.DiGraph()
 
-    generations = 20
+    generations = 100
 
     try:
         for generation in range(1, generations + 1):
             agents = tournament_generation(agents, genealogy_graph, games_per_agent=5, generation_num=generation)
             avg_mmr = sum(agent.mmr for agent in agents) // len(agents)
             top_agent = max(agents, key=lambda x: x.mmr)
+
+            with torch.no_grad():
+                v_pred = top_agent.value_net(SAMPLE_STATE).item()
+                v_weak = top_agent.value_net(SAMPLE_STATE_WEAK).item()
+                v_weak2 = top_agent.value_net(SAMPLE_STATE_WEAK2).item()
+
+                V_HISTORY.append(v_pred)
+                V_HISTORY_WEAK.append(v_weak)
+                V_HISTORY_WEAK2.append(v_weak2)
+
 
             print(f"\n=== Generation {generation}: Average MMR = {avg_mmr}, Top Agent = {top_agent.name} (MMR: {top_agent.mmr:.0f}) ===")
 
@@ -248,11 +285,23 @@ def main():
 
     finally:
         # ✨ Plot genealogy tree
-        plt.figure(figsize=(14, 10))
-        pos = nx.spring_layout(genealogy_graph, k=0.5, iterations=100)
-        nx.draw(genealogy_graph, pos, with_labels=True, node_size=500, font_size=8, arrows=True)
-        plt.title("Genealogy Tree After Training")
+        # plt.figure(figsize=(14, 10))
+        # pos = nx.spring_layout(genealogy_graph, k=0.5, iterations=100)
+        # nx.draw(genealogy_graph, pos, with_labels=True, node_size=500, font_size=8, arrows=True)
+        # plt.title("Genealogy Tree After Training")
+        # plt.show()
+
+        plt.figure()
+        plt.plot(V_HISTORY, label = 'Strong State', marker='o')
+        plt.plot(V_HISTORY_WEAK, label='Weak State', marker='x')
+        plt.plot(V_HISTORY_WEAK2, label='empty State', marker='.')
+
+        plt.xlabel("Generation")
+        plt.ylabel("Predicted V(s) for fixed sample state")
+        plt.title("ValueNet Prediction Over Generations")
+        plt.grid(True)
         plt.show()
+
 
         # ✨ Save top agent
         top_agent = max(agents, key=lambda x: x.mmr)

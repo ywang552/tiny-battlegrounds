@@ -4,7 +4,7 @@ from tiny_battlegrounds import TinyBattlegroundsEnv
 from tiny_pbt import SelfLearningAgent  # Import your agent class
 from tiny_battlegrounds import MINION_POOL
 def simulate_single_game(agent):
-    dummy_agents = [SelfLearningAgent(9, 5, name=f"Dummy_{i}") for i in range(7)]
+    dummy_agents = [SelfLearningAgent(20, 5, name=f"Dummy_{i}") for i in range(7)]
     for dummy in dummy_agents:
         dummy.policy.eval()
 
@@ -27,7 +27,7 @@ def simulate_single_game(agent):
 
 if __name__ == "__main__":
     # ✨ Load your trained agent
-    agent = SelfLearningAgent(9, 5, name="MyTestAgent")
-    agent.load("saved_models/agent_Bot_27_clone_clone_clone_final_20250429_195355.pt")  # Example
+    agent = SelfLearningAgent(20, 5, name="MyTestAgent")
+    agent.load("saved_models/agent_Bot_11_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_final_20250430_014108.pt")  # Example
     print(MINION_POOL)
     simulate_single_game(agent)

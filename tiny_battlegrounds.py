@@ -64,12 +64,10 @@ class TinyBattlegroundsEnv:
             agent.health = 40
             agent.alive = True
             agent.shop = self.roll_shop(agent.tier)
-            agent.cumulative_reward = 0  # ← RESET cumulative reward each game!
             agent.gold_spent_this_game = 0
             agent.minions_bought_this_game = 0
             agent.turns_skipped_this_game = 0
             agent.behavior_counts = {'buy': 0, 'sell': 0, 'roll': 0, 'level': 0, 'end_turn': 0}
-            agent.last_cumulative_reward = 0
             agent.tavern_upgrade_cost = self.get_base_upgrade_cost(agent.tier)  # ✅ One-time init
 
 
@@ -156,35 +154,38 @@ class TinyBattlegroundsEnv:
             defender_tier = defender.tier
             defender_real = True
 
-        # 🚨 New rule: punish empty boards
-        if len(attacker.board) == 0:
-            attacker.health -= 5
-            attacker.cumulative_reward -= 5.0  # Optional: punish reward also
+        # === Combat result for ATTACKER ===
+        if attacker.alive:
+            prev_health = attacker.health
+            enemy_strength = sum(m.strength() for m in defender_alive_minions) if defender_real else 0
+            next_state = self.build_combat_state(attacker, prev_health, enemy_strength)
 
-        if defender_real and len(defender.board) == 0:
-            defender.health -= 5
-            defender.cumulative_reward -= 5.0  # Optional: punish reward also
+            if attacker_strength > defender_strength:
+                attacker.observe(next_state, 5.0)
+            elif attacker_strength < defender_strength:
+                # Apply combat damage
+                if defender_real:
+                    damage = defender_tier + sum(m.tier for m in defender_alive_minions)
+                    attacker.health -= max(damage, 1)
+                attacker.observe(next_state, -5.0)
+            else:
+                attacker.observe(next_state, 0.0)
 
-        # ⚔️ Normal fight resolution
-        if attacker_strength > defender_strength:
-            attacker.cumulative_reward += 4.0
-            if defender_real:
-                defender.cumulative_reward -= 1.0
+        # === Combat result for DEFENDER ===
+        if defender_real and defender.alive:
+            prev_health = defender.health
+            enemy_strength = sum(m.strength() for m in attacker.board)
+            next_state = self.build_combat_state(defender, prev_health, enemy_strength)
+
+            if defender_strength > attacker_strength:
                 damage = attacker.tier + sum(m.tier for m in attacker.board)
                 defender.health -= max(damage, 1)
+                defender.observe(next_state, 5.0)
+            elif defender_strength < attacker_strength:
+                defender.observe(next_state, -5.0)
+            else:
+                defender.observe(next_state, 0.0)
 
-        elif attacker_strength < defender_strength:
-            attacker.cumulative_reward -= 1.0
-            if defender_real:
-                defender.cumulative_reward += 4.0
-                damage = defender_tier + sum(m.tier for m in defender_alive_minions)
-                attacker.health -= max(damage, 1)
-
-        else:
-            attacker.cumulative_reward += 0.5
-            if defender_real:
-                defender.cumulative_reward += 0.5
-            # No health loss on tie
 
 
     def remove_dead(self):
@@ -197,30 +198,67 @@ class TinyBattlegroundsEnv:
 
 
 
-    def build_state_for_agent(self, agent):
+    def build_active_state(self, agent):
         gold = agent.gold
+        gold_cap = agent.gold_cap
+        tier = agent.tier
+        health = agent.health
+        turn_number = self.turn
+
+        board_strength = sum(m.strength() for m in agent.board)
+        num_minions = len(agent.board)
+
+        shop_slots = [m.tier for m in agent.shop]
+        while len(shop_slots) < 6:
+            shop_slots.append(0)
+
+        # Pad unused combat-related features
+        health_delta = 0.0
+        previous_health = 0.0
+        enemy_strength = 0.0
+
+        state_vector = [
+            gold, gold_cap, tier, health, turn_number,
+            board_strength, num_minions,
+            *shop_slots,              # 6 elements
+            previous_health,          # combat-only
+            health_delta,             # combat-only
+            enemy_strength            # combat-only
+        ]
+
+        # Pad up to 20 if we add more features later
+        while len(state_vector) < 20:
+            state_vector.append(0.0)
+
+        return torch.tensor(state_vector, dtype=torch.float32)
+    
+    def build_combat_state(self, agent, previous_health, enemy_strength):
+        current_health = agent.health
+        health_delta = previous_health - current_health
+        turn_number = self.turn
         tier = agent.tier
         board_strength = sum(m.strength() for m in agent.board)
         num_minions = len(agent.board)
-        
-        if agent.shop:
-            shop_avg_tier = sum(m.tier for m in agent.shop) / len(agent.shop)
-        else:
-            shop_avg_tier = 0
+        gold_cap = agent.gold_cap
 
-        shop_slot_0 = agent.shop[0].tier if len(agent.shop) > 0 else 0
-        shop_slot_1 = agent.shop[1].tier if len(agent.shop) > 1 else 0
-        shop_slot_2 = agent.shop[2].tier if len(agent.shop) > 2 else 0
-
-        turn_number = self.turn
+        # Pad shop-related fields
+        gold = 0.0
+        shop_slots = [0.0] * 6  # zero for shop_slot_0 to shop_slot_5
 
         state_vector = [
-            gold, tier, board_strength, num_minions,
-            shop_avg_tier, shop_slot_0, shop_slot_1, shop_slot_2,
-            turn_number
+            gold, gold_cap, tier, current_health, turn_number,
+            board_strength, num_minions,
+            *shop_slots,         # inactive phase doesn't access shop
+            previous_health,
+            health_delta,
+            enemy_strength
         ]
 
+        while len(state_vector) < 20:
+            state_vector.append(0.0)
+
         return torch.tensor(state_vector, dtype=torch.float32)
+
 
 
 
@@ -250,7 +288,7 @@ class TinyBattlegroundsEnv:
                     print("Shop: EMPTY")
 
             while agent.gold > 0:
-                state = self.build_state_for_agent(agent)
+                state = self.build_active_state(agent)
                 available_actions = self.get_available_actions(agent)
 
                 if not available_actions:
@@ -259,11 +297,7 @@ class TinyBattlegroundsEnv:
                 action_idx = agent.act(state)
                 action_str = available_actions[action_idx % len(available_actions)]
 
-                reward = agent.cumulative_reward - agent.last_cumulative_reward
-                next_state = self.build_state_for_agent(agent)
-                if hasattr(agent, "observe"):
-                    agent.observe(next_state, reward)
-
+                
 
                 if hasattr(agent, "behavior_counts"):
                     for key in agent.behavior_counts:
@@ -278,6 +312,10 @@ class TinyBattlegroundsEnv:
                         agent.turns_skipped_this_game += 1
                     if verbose and agent.name == focus_agent_name:
                         print(">> Ending turn early.")
+
+                    next_state = self.build_active_state(agent)
+                    if hasattr(agent, "observe"):
+                        agent.observe(next_state, 0.0)  # zero reward during normal steps        
                     break
 
                 if action_str == "level":
@@ -287,10 +325,12 @@ class TinyBattlegroundsEnv:
                         agent.gold -= cost
                         agent.tier += 1
                         agent.tavern_upgrade_cost = self.get_base_upgrade_cost(agent.tier)  # reset to new tier base
-                        agent.cumulative_reward += 2.0
                         agent.gold_spent_this_game += cost
                         if verbose and agent.name == focus_agent_name:
                             print(f">> Upgraded to Tier {agent.tier}.")
+                    next_state = self.build_active_state(agent)
+                    if hasattr(agent, "observe"):
+                        agent.observe(next_state, 0.0)  # zero reward during normal steps        
                     continue
 
 
@@ -300,10 +340,12 @@ class TinyBattlegroundsEnv:
                         bought_minion = agent.shop[idx]
                         agent.gold -= 3
                         agent.board.append(agent.shop.pop(idx))
-                        agent.cumulative_reward += 1.0
                         agent.minions_bought_this_game += 1
                         if verbose and agent.name == focus_agent_name:
                             print(f">> Bought {bought_minion.name} ({bought_minion.attack}/{bought_minion.health})")
+                    next_state = self.build_active_state(agent)
+                    if hasattr(agent, "observe"):
+                        agent.observe(next_state, 0.0)  # zero reward during normal steps        
                     continue
 
                 if action_str == "roll":
@@ -311,8 +353,10 @@ class TinyBattlegroundsEnv:
                         agent.gold -= 1
                         agent.shop = self.roll_shop(agent.tier)
                         agent.gold_spent_this_game += 1
-                        if verbose and agent.name == focus_agent_name:
-                            print(f">> Rolled new shop.")
+                             
+                    next_state = self.build_active_state(agent)
+                    if hasattr(agent, "observe"):
+                        agent.observe(next_state, 0.0)  # zero reward during normal steps                
                     continue
 
                 if action_str.startswith("sell_"):
@@ -320,10 +364,17 @@ class TinyBattlegroundsEnv:
                     if idx < len(agent.board):
                         sold_minion = agent.board.pop(idx)
                         agent.gold += 1
-                        agent.cumulative_reward += 0.5
                         if verbose and agent.name == focus_agent_name:
                             print(f">> Sold {sold_minion.name} ({sold_minion.attack}/{sold_minion.health})")
+
+                    next_state = self.build_active_state(agent)
+                    if hasattr(agent, "observe"):
+                        agent.observe(next_state, 0.0)  # zero reward during normal steps        
                     continue
+
+
+
+
 
         
         for agent in self.agents:
