@@ -1,9 +1,19 @@
 # === simulate_game.py ===
 import torch
 from env.tiny_battlegrounds import TinyBattlegroundsEnv
-from tiny_pbt import SelfLearningAgent  # Import your agent class
+from agents.mlp_agent import SelfLearningAgent  
 from env.tiny_battlegrounds import MINION_POOL
 from agents.transformer_agent import TransformerAgent
+
+AGENT_TYPE = "transformer"  # or "transformer"
+
+def make_agent(i):
+    if AGENT_TYPE == "transformer":
+        return TransformerAgent(name=f"Transformer_{i}")
+    elif AGENT_TYPE == "mlp":
+        return SelfLearningAgent(input_size=20, action_size=5, name=f"MLP_{i}")
+    else:
+        raise ValueError(f"Unsupported AGENT_TYPE: {AGENT_TYPE}")
 
 
 
@@ -31,7 +41,7 @@ def simulate_single_game(agent):
 
 if __name__ == "__main__":
     # ✨ Load your trained agent
-    agent = SelfLearningAgent(20, 5, name="MyTestAgent")
-    agent.load("saved_models/agent_Bot_11_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_clone_final_20250430_014108.pt")  # Example
+    agent = make_agent(0)
+    agent.load("saved_models/BEST_Transformer_4_transformer_20250501_134225.pt")  # Example
     print(MINION_POOL)
     simulate_single_game(agent)

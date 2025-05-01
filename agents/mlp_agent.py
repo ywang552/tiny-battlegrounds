@@ -67,7 +67,7 @@ class SelfLearningAgent:
         })
         return action
 
-    def observe(self, next_state, reward):
+    def observe(self, next_state, reward, opponent=None):
         if self.memory:
             self.memory[-1]["next_state"] = next_state.detach()
             self.memory[-1]["reward"] = reward

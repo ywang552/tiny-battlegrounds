@@ -1,30 +1,35 @@
 # === ladder_trainer.py ===
 import torch
 import random
-import time
 import os
-import signal
 import matplotlib
-matplotlib.use('Agg')  # Disable GUI backend
+matplotlib.use('Agg')  # Disable GUI backend for headless environments
 import matplotlib.pyplot as plt
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from env.tiny_battlegrounds import TinyBattlegroundsEnv
 from agents.mlp_agent import SelfLearningAgent
+from agents.transformer_agent import TransformerAgent
 
 # === CONFIGURATION ===
-NUM_AGENTS = 64
+NUM_AGENTS = 16
 GAME_SIZE = 8
 SAVE_EVERY = 20
 EVAL_EVERY = 40
-MAX_WORKERS = 4
 PLOT_EVERY = 50
-
+MAX_GEN = 100
+AGENT_TYPE = "transformer"  # or "mlp"
 SAVE_DIR = "saved_models"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-global_agents = []  # for graceful interrupt access
+# === AGENT FACTORY ===
+def make_agent(i):
+    if AGENT_TYPE == "transformer":
+        return TransformerAgent(name=f"Transformer_{i}")
+    elif AGENT_TYPE == "mlp":
+        return SelfLearningAgent(input_size=20, action_size=5, name=f"MLP_{i}")
+    else:
+        raise ValueError(f"Unsupported AGENT_TYPE: {AGENT_TYPE}")
 
 # === MATCHMAKING ===
 def matchmake(agents, game_size):
@@ -36,21 +41,6 @@ def matchmake(agents, game_size):
             sorted_agents.remove(agent)
         games.append(group)
     return games
-
-# === INTERRUPT HANDLING ===
-def save_all_agents(tag="INTERRUPT"):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    for agent in global_agents:
-        path = os.path.join(SAVE_DIR, f"agent_{agent.name}_{tag}_{timestamp}.pt")
-        agent.save(path)
-    print(f"\n✅ Saved {len(global_agents)} agents to {SAVE_DIR}/")
-
-def handle_interrupt(signum, frame):
-    print("\n🚨 Interrupt received. Saving all agents...")
-    save_all_agents()
-    exit(0)
-
-signal.signal(signal.SIGINT, handle_interrupt)
 
 # === GAME SIMULATION ===
 def run_game(agent_group):
@@ -64,9 +54,16 @@ def run_game(agent_group):
 def evaluate_against_snapshots(agent, snapshot_paths):
     opponents = []
     for path in snapshot_paths:
-        clone = SelfLearningAgent(9, 5, name=f"Snapshot_{os.path.basename(path)}")
-        clone.load(path)
-        opponents.append(clone)
+        try:
+            if AGENT_TYPE == "transformer":
+                clone = TransformerAgent(name=f"Snapshot_{os.path.basename(path)}")
+                clone.load(path)
+            else:
+                clone = SelfLearningAgent(20, 5, name=f"Snapshot_{os.path.basename(path)}")
+                clone.load(path)
+            opponents.append(clone)
+        except Exception as e:
+            print(f"⚠️ Failed to load snapshot {path}: {e}")
 
     eval_group = opponents + [agent]
     env = TinyBattlegroundsEnv(eval_group)
@@ -85,47 +82,58 @@ def plot_mmr(agents, history, gen):
         plt.plot(gens, tops, label="Top MMR")
         plt.xlabel("Generation")
         plt.ylabel("MMR")
-        plt.title("MMR Over Time")
+        plt.title(f"MMR Over Time ({AGENT_TYPE})")
         plt.grid()
         plt.legend()
-        plt.savefig(os.path.join(SAVE_DIR, f"mmr_plot_gen_{gen}.png"))
+        plt.savefig(os.path.join(SAVE_DIR, f"mmr_plot_gen_{gen}_{AGENT_TYPE}.png"))
         plt.close()
 
 # === MAIN TRAINING LOOP ===
 def main():
-    global global_agents
-    global_agents = [SelfLearningAgent(9, 5, name=f"Agent_{i}") for i in range(NUM_AGENTS)]
-
+    agents = [make_agent(i) for i in range(NUM_AGENTS)]
     mmr_history = []
     generation = 0
 
     try:
-        while True:
+        while generation < MAX_GEN:
+            print(f"--------- Generation: {generation} ---------")
             generation += 1
-            games = matchmake(global_agents, GAME_SIZE)
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                executor.map(run_game, games)
 
-            if generation % SAVE_EVERY == 0:
-                save_all_agents(tag=f"gen{generation}")
+            games = matchmake(agents, GAME_SIZE)
+            for game in games:
+                run_game(game)
 
             if generation % EVAL_EVERY == 0:
-                top_agent = max(global_agents, key=lambda a: a.mmr)
+                top_agent = max(agents, key=lambda a: a.mmr)
+                snap_path = os.path.join(SAVE_DIR, f"Snapshot_gen{generation}.pt")
+                top_agent.save(snap_path)
+                print(f"📸 Saved snapshot: {snap_path}")
+
                 snapshots = sorted([
                     os.path.join(SAVE_DIR, f) for f in os.listdir(SAVE_DIR)
-                    if f.endswith(".pt") and "Snapshot" not in f
-                ])[-3:]  # last 3 snapshots
+                    if f.startswith("Snapshot_gen") and f.endswith(".pt")
+                ])[-3:]
+
                 evaluate_against_snapshots(top_agent, snapshots)
 
-            plot_mmr(global_agents, mmr_history, generation)
+            plot_mmr(agents, mmr_history, generation)
 
             if generation % 10 == 0:
-                top_agent = max(global_agents, key=lambda a: a.mmr)
+                top_agent = max(agents, key=lambda a: a.mmr)
                 print(f"[Gen {generation}] Top Agent: {top_agent.name} | MMR: {top_agent.mmr:.2f}")
+
+    except KeyboardInterrupt:
+        print("\n🛑 Training manually interrupted.")
 
     except Exception as e:
         print(f"\n💥 Exception occurred: {e}")
-        save_all_agents(tag="CRASH")
+
+    finally:
+        top_agent = max(agents, key=lambda a: a.mmr)
+        now = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(SAVE_DIR, f"BEST_{top_agent.name}_{AGENT_TYPE}_{now}.pt")
+        top_agent.save(path)
+        print(f"🏁 Saved BEST agent: {top_agent.name} | Final MMR: {top_agent.mmr:.2f} → {path}")
 
 if __name__ == "__main__":
     main()
