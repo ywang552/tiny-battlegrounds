@@ -4,8 +4,8 @@ from models.tiny_nn_policy import SelfLearningAgent  # <-- import your self-lear
 import matplotlib.pyplot as plt  # Add this at the top of your file if not imported yet
 import os
 import json
-from load import load_minions
-from transformer_agent import TransformerAgent
+from utils.load import load_minions
+from agents.transformer_agent import TransformerAgent
 
 
 

@@ -9,6 +9,7 @@ models/__pycache__
 # Ignore model checkpoints
 saved_models/
 checkpoints/
+saved_agents/
 *.pt
 *.pth
 

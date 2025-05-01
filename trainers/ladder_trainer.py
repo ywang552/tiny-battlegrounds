@@ -1,16 +1,17 @@
-# ladder_arena.py
+# === ladder_trainer.py ===
 import torch
 import random
 import time
 import os
 import signal
 import matplotlib
-matplotlib.use('Agg')  # << This disables tkinter GUI backend
+matplotlib.use('Agg')  # Disable GUI backend
 import matplotlib.pyplot as plt
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from tiny_battlegrounds import TinyBattlegroundsEnv
-from tiny_pbt import SelfLearningAgent
+
+from env.tiny_battlegrounds import TinyBattlegroundsEnv
+from agents.mlp_agent import SelfLearningAgent
 
 # === CONFIGURATION ===
 NUM_AGENTS = 64

@@ -1,6 +1,6 @@
 import torch
-from transformer_agent import TransformerAgent
-from tiny_battlegrounds import TinyBattlegroundsEnv
+from agents.transformer_agent import TransformerAgent
+from env.tiny_battlegrounds import TinyBattlegroundsEnv
 
 def run_test_game(num_agents=8, verbose=True, focus_agent_name="TAgent_0"):
     print("🚀 Launching test game...")
