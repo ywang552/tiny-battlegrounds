@@ -5,9 +5,9 @@ import matplotlib.pyplot as plt  # Add this at the top of your file if not impor
 import os
 import json
 from load import load_minions
+from transformer_agent import TransformerAgent
 
-with open("data/minion_pool.json", "r") as f:
-    minion_data = json.load(f)
+
 
 class Minion:
     def __init__(self, name, types, attack, health, tier, keywords=None):
@@ -69,6 +69,8 @@ class TinyBattlegroundsEnv:
             agent.turns_skipped_this_game = 0
             agent.behavior_counts = {'buy': 0, 'sell': 0, 'roll': 0, 'level': 0, 'end_turn': 0}
             agent.tavern_upgrade_cost = self.get_base_upgrade_cost(agent.tier)  # ✅ One-time init
+            if isinstance(agent, TransformerAgent):
+                agent.env = self
 
 
 
@@ -101,8 +103,11 @@ class TinyBattlegroundsEnv:
         actions = []
         upgrade_cost = self.get_upgrade_cost(agent)
 
-        if agent.tier < 6 and agent.gold >= upgrade_cost:
-            actions.append("level")
+        if agent.tier < 6:
+            upgrade_cost = self.get_upgrade_cost(agent)
+            if agent.gold >= upgrade_cost:
+                actions.append("level")
+
 
 
         if agent.shop:
@@ -128,72 +133,69 @@ class TinyBattlegroundsEnv:
         random.shuffle(alive_agents)
         if len(alive_agents) % 2 == 1:
             ghost_fighter = alive_agents.pop()
-            pairs.append((ghost_fighter, 'ghost'))
+            assert self.latest_dead_agent is not None, "Ghost pairing requested before any agent has died"
+            ghost_opponent = self.latest_dead_agent
+            pairs.append((ghost_fighter, ghost_opponent))
+
+
         for i in range(0, len(alive_agents), 2):
             pairs.append((alive_agents[i], alive_agents[i+1]))
+
         return pairs
 
+    def simulate_combat(self, a, d):
+        m1 = sum(m.strength() for m in a.board)
+        m2 = sum(m.strength() for m in d.board)
 
-    def simulate_combat(self, attacker, defender):
-        attacker_strength = sum(m.strength() for m in attacker.board)
+        # Tie case
+        if m1 == m2:
+            if a.alive:
+                state = a.build_state(self, phase="combat", previous_health=a.health, enemy_strength=m2)
+                a.observe(state, 0.0)
+            if d.alive:
+                state = d.build_state(self, phase="combat", previous_health=d.health, enemy_strength=m1)
+                d.observe(state, 0.0)
+            return
 
-        if defender == 'ghost':
-            if self.latest_dead_agent:
-                defender_strength = sum(m.strength() for m in self.latest_dead_agent.board)
-                defender_alive_minions = self.latest_dead_agent.board
-                defender_tier = self.latest_dead_agent.tier
-                defender_real = False
-            else:
-                defender_strength = 0
-                defender_alive_minions = []
-                defender_tier = 1
-                defender_real = False
-        else:
-            defender_strength = sum(m.strength() for m in defender.board)
-            defender_alive_minions = defender.board
-            defender_tier = defender.tier
-            defender_real = True
+        # Determine winner and loser
+        winner = a if m1 > m2 else d
+        loser  = d if m1 > m2 else a
 
-        # === Combat result for ATTACKER ===
-        if attacker.alive:
-            prev_health = attacker.health
-            enemy_strength = sum(m.strength() for m in defender_alive_minions) if defender_real else 0
-            next_state = self.build_combat_state(attacker, prev_health, enemy_strength)
+        # Winner reward
+        if winner.alive:
+            state = winner.build_state(self, phase="combat", previous_health=winner.health, enemy_strength=sum(m.strength() for m in loser.board))
+            winner.observe(state, 5.0, opponent=loser)  # ✅ PASS OPPONENT
 
-            if attacker_strength > defender_strength:
-                attacker.observe(next_state, 5.0)
-            elif attacker_strength < defender_strength:
-                # Apply combat damage
-                if defender_real:
-                    damage = defender_tier + sum(m.tier for m in defender_alive_minions)
-                    attacker.health -= max(damage, 1)
-                attacker.observe(next_state, -5.0)
-            else:
-                attacker.observe(next_state, 0.0)
-
-        # === Combat result for DEFENDER ===
-        if defender_real and defender.alive:
-            prev_health = defender.health
-            enemy_strength = sum(m.strength() for m in attacker.board)
-            next_state = self.build_combat_state(defender, prev_health, enemy_strength)
-
-            if defender_strength > attacker_strength:
-                damage = attacker.tier + sum(m.tier for m in attacker.board)
-                defender.health -= max(damage, 1)
-                defender.observe(next_state, 5.0)
-            elif defender_strength < attacker_strength:
-                defender.observe(next_state, -5.0)
-            else:
-                defender.observe(next_state, 0.0)
+        # Loser punishment
+        if loser.alive:
+            damage = winner.tier + sum(m.tier for m in winner.board)
+            loser.health -= max(damage, 1)
+            state = loser.build_state(self, phase="combat", previous_health=loser.health + max(damage, 1), enemy_strength=sum(m.strength() for m in winner.board))
+            loser.observe(state, -5.0, opponent=winner)  # ✅ PASS OPPONENT
 
 
 
     def remove_dead(self):
+        latest_turn = self.turn
+        highest_health_before_death = float('-inf')
+        best_candidate = None  # ✅ FIXED
+
         for agent in self.agents:
             if agent.alive and agent.health <= 0:
-                agent.health = max(agent.health, 0)  # ← Cap it!
+                prev_health = agent.health  # already <= 0
+                agent.health = max(agent.health, 0)
                 agent.alive = False
-                self.dead[agent] = self.turn
+                self.dead[agent] = latest_turn
+
+                # ✅ Tie-breaker logic:
+                if prev_health > highest_health_before_death:
+                    best_candidate = agent
+                    highest_health_before_death = prev_health
+
+        # ✅ Store best candidate as ghost agent
+        if best_candidate:
+            self.latest_dead_agent = best_candidate
+
 
 
 
@@ -260,13 +262,25 @@ class TinyBattlegroundsEnv:
         return torch.tensor(state_vector, dtype=torch.float32)
 
 
-
-
     def step(self, verbose=False, focus_agent_name=None):
-        
+        # ⚔️ --- Match Making ---
+        alive_agents = [a for a in self.agents if a.alive]
+        pairs = self.matchmaking(alive_agents)
+        self.current_opponent = {}
+
+        for p1, p2 in pairs:
+            if p2 is None:
+                self.current_opponent[p1] = None
+
+            else:
+                self.current_opponent[p1] = p2
+                self.current_opponent[p2] = p1
+
+        # === ACTIVE PHASE ===
         for agent in self.agents:
             if not agent.alive:
                 continue
+
             agent.shop = self.roll_shop(agent.tier)
             agent.gold_cap = min(3 + self.turn - 1, 10)
             agent.gold = agent.gold_cap
@@ -274,30 +288,22 @@ class TinyBattlegroundsEnv:
             if verbose and agent.name == focus_agent_name:
                 print(f"\n--- Turn {self.turn} ---")
                 print(f"Gold: {agent.gold}, Health: {agent.health}, Tier: {agent.tier}")
-                if agent.board:
-                    print("Board:")
-                    for m in agent.board:
-                        print(f"  {m.name} ({m.attack}/{m.health})")
-                else:
-                    print("Board: EMPTY")
-                if agent.shop:
-                    print(f"Shop of length {len(agent.shop)}:")
-                    for idx, m in enumerate(agent.shop):
-                        print(f"  [{idx}] {m.name} ({m.attack}/{m.health})")
-                else:
-                    print("Shop: EMPTY")
+                print("Board:" if agent.board else "Board: EMPTY")
+                for m in agent.board:
+                    print(f"  {m.name} ({m.attack}/{m.health})")
+                print(f"Shop of length {len(agent.shop)}:" if agent.shop else "Shop: EMPTY")
+                for idx, m in enumerate(agent.shop):
+                    print(f"  [{idx}] {m.name} ({m.attack}/{m.health})")
 
             while agent.gold > 0:
-                state = self.build_active_state(agent)
+                state = agent.build_state(self, phase="active")
                 available_actions = self.get_available_actions(agent)
 
                 if not available_actions:
                     break
 
-                action_idx = agent.act(state)
-                action_str = available_actions[action_idx % len(available_actions)]
-
-                
+                action = agent.act(state)
+                action_str = available_actions[action % len(available_actions)]
 
                 if hasattr(agent, "behavior_counts"):
                     for key in agent.behavior_counts:
@@ -313,26 +319,20 @@ class TinyBattlegroundsEnv:
                     if verbose and agent.name == focus_agent_name:
                         print(">> Ending turn early.")
 
-                    next_state = self.build_active_state(agent)
-                    if hasattr(agent, "observe"):
-                        agent.observe(next_state, 0.0)  # zero reward during normal steps        
+                    agent.observe(agent.build_state(self, phase="active"), 0.0)
                     break
 
                 if action_str == "level":
                     cost = agent.tavern_upgrade_cost
-
                     if agent.gold >= cost:
                         agent.gold -= cost
                         agent.tier += 1
-                        agent.tavern_upgrade_cost = self.get_base_upgrade_cost(agent.tier)  # reset to new tier base
+                        agent.tavern_upgrade_cost = self.get_base_upgrade_cost(agent.tier)
                         agent.gold_spent_this_game += cost
                         if verbose and agent.name == focus_agent_name:
                             print(f">> Upgraded to Tier {agent.tier}.")
-                    next_state = self.build_active_state(agent)
-                    if hasattr(agent, "observe"):
-                        agent.observe(next_state, 0.0)  # zero reward during normal steps        
+                    agent.observe(agent.build_state(self, phase="active"), 0.0)
                     continue
-
 
                 if action_str.startswith("buy_"):
                     idx = int(action_str.split("_")[1])
@@ -343,9 +343,7 @@ class TinyBattlegroundsEnv:
                         agent.minions_bought_this_game += 1
                         if verbose and agent.name == focus_agent_name:
                             print(f">> Bought {bought_minion.name} ({bought_minion.attack}/{bought_minion.health})")
-                    next_state = self.build_active_state(agent)
-                    if hasattr(agent, "observe"):
-                        agent.observe(next_state, 0.0)  # zero reward during normal steps        
+                    agent.observe(agent.build_state(self, phase="active"), 0.0)
                     continue
 
                 if action_str == "roll":
@@ -353,10 +351,7 @@ class TinyBattlegroundsEnv:
                         agent.gold -= 1
                         agent.shop = self.roll_shop(agent.tier)
                         agent.gold_spent_this_game += 1
-                             
-                    next_state = self.build_active_state(agent)
-                    if hasattr(agent, "observe"):
-                        agent.observe(next_state, 0.0)  # zero reward during normal steps                
+                    agent.observe(agent.build_state(self, phase="active"), 0.0)
                     continue
 
                 if action_str.startswith("sell_"):
@@ -366,28 +361,17 @@ class TinyBattlegroundsEnv:
                         agent.gold += 1
                         if verbose and agent.name == focus_agent_name:
                             print(f">> Sold {sold_minion.name} ({sold_minion.attack}/{sold_minion.health})")
-
-                    next_state = self.build_active_state(agent)
-                    if hasattr(agent, "observe"):
-                        agent.observe(next_state, 0.0)  # zero reward during normal steps        
+                    agent.observe(agent.build_state(self, phase="active"), 0.0)
                     continue
 
-
-
-
-
-        
+        # Reduce upgrade cost
         for agent in self.agents:
             old_cost = agent.tavern_upgrade_cost
             agent.tavern_upgrade_cost = max(agent.tavern_upgrade_cost - 1, 0)
             if verbose and agent.name == focus_agent_name:
                 print(f"[Turn {self.turn}] {agent.name} (Tier {agent.tier}) upgrade cost: {old_cost} → {agent.tavern_upgrade_cost}")
 
-
         # ⚔️ --- COMBAT PHASE ---
-        alive_agents = [a for a in self.agents if a.alive]
-        pairs = self.matchmaking(alive_agents)
-
         for p1, p2 in pairs:
             self.simulate_combat(p1, p2)
 
@@ -395,8 +379,7 @@ class TinyBattlegroundsEnv:
 
 
 
-
-
+    
 
     def play_game(self, verbose=False, focus_agent_name=None):
         self.setup()
@@ -499,7 +482,7 @@ def batch_train(num_batches=100, games_per_batch=20, print_every=10, save_every=
                     "agent_name": top_agent.name,
                     "batch": batch + 1,
                     "mmr": top_agent.mmr,
-                    "policy_state_dict": top_agent.policy.state_dict(),
+                    "transformer_state": top_agent.state_dict()
                 }
                 torch.save(save_data, f"saved_models/agent_{top_agent.name}_batch{batch+1}.pt")
                 print(f"✅ Saved {top_agent.name} after Batch {batch+1}")

@@ -7,6 +7,8 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 import networkx as nx  # 🔥 Genealogy Tracking
 from datetime import datetime
+from transformer_agent import TransformerAgent
+
 
 from tiny_battlegrounds import TinyBattlegroundsEnv
 
@@ -178,6 +180,12 @@ class SelfLearningAgent:
         data = torch.load(filepath)
         self.policy.load_state_dict(data["policy"])
         self.value_net.load_state_dict(data["value_net"])
+
+    def build_state(self, env, phase="active", **kwargs):
+        if phase == "combat":
+            return env.build_combat_state(self, kwargs["previous_health"], kwargs["enemy_strength"])
+        else:
+            return env.build_active_state(self)
 
 
 # ===== Core Functions =====

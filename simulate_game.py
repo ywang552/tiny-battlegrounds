@@ -3,6 +3,8 @@ import torch
 from tiny_battlegrounds import TinyBattlegroundsEnv
 from tiny_pbt import SelfLearningAgent  # Import your agent class
 from tiny_battlegrounds import MINION_POOL
+from transformer_agent import TransformerAgent
+
 def simulate_single_game(agent):
     dummy_agents = [SelfLearningAgent(20, 5, name=f"Dummy_{i}") for i in range(7)]
     for dummy in dummy_agents:
