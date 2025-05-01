@@ -7,50 +7,6 @@ import json
 with open("data/minion_pool.json", "r") as f:
     minion_data = json.load(f)
 
-    TRIBE_TO_INDEX = {
-        "Beast": 0,
-        "Mech": 1,
-        "Murloc": 2,
-        "Demon": 3,
-        "Dragon": 4,
-        "Elemental": 5,
-        "Naga": 6,
-        "Quilboar": 7,
-        "Pirate": 8,
-        "Undead": 9,
-        "None": 10  # for no tribe / neutral
-    }
-
-
-    def encode_minion(minion, source_flag, slot_idx=None):
-        tribes = torch.zeros(11)
-
-        try:
-            # 🔥 If minion is Amalgam-style ("All"), set all tribes = 1
-            if "All" in minion.types:
-                tribes[:] = 1
-            else:
-                for tribe in minion.types:
-                    key = tribe if tribe is not None else "None"
-                    tribes[TRIBE_TO_INDEX[key]] = 1
-
-            base = torch.tensor([
-                float(minion.attack),
-                float(minion.health),
-                float(minion.tier),
-            ], dtype=torch.float32)
-
-            slot_feature = torch.tensor(
-                [slot_idx / 7.0], dtype=torch.float32
-            ) if slot_idx is not None else torch.tensor([0.0])
-
-            out = torch.cat([base, tribes, torch.tensor([source_flag], dtype=torch.float32), slot_feature])
-            return out
-
-        except Exception as e:
-            print(f"❌ Failed to encode minion: {minion.name}, error: {e}")
-            return torch.zeros(16)
-
 
 
 
@@ -219,30 +175,6 @@ class TransformerAgent:
         })
 
         return action
-    def _update_opponent_memory(self, opponent):
-        opponent_id = self.env.agents.index(opponent)
-        board = opponent.board
-        strength = sum(m.strength() for m in board)
-        avg_tier = sum(m.tier for m in board) / len(board) if board else 0
-        damage = opponent.tier + sum(m.tier for m in board)
-
-        # replace or initialize
-        self.opponent_memory[opponent_id] = [
-            0,
-            strength,
-            avg_tier,
-            damage,
-            0, 
-            opponent.tier,
-            opponent_id
-        ]
-
-        # increment all other memories' turns since seen
-        for k in self.opponent_memory:
-            if k != opponent_id:
-                self.opponent_memory[k][0] += 1
-
-
 
     def observe(self, token_input, reward, opponent=None):
         self.memory.append({

@@ -1,5 +1,4 @@
 import json
-
 def load_minions(json_path):
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -29,5 +28,9 @@ def load_minions(json_path):
 if __name__ == "__main__":
     path = "data\\bg_minions_all.json"  # your full file
     minions = load_minions(path)
+
     for m in minions:
-        print(m)
+        if m.get('name').startswith('Brann'):
+            for tribe in m.types or []:
+                if tribe in TRIBE_TO_INDEX:
+                    tribes[TRIBE_TO_INDEX[tribe]] = 1

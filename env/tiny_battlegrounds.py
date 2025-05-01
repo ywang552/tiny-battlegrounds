@@ -8,6 +8,55 @@ from agents.transformer_agent import TransformerAgent
 
 
 
+TRIBE_TO_INDEX = {
+    "Beast": 0,
+    "Mech": 1,
+    "Murloc": 2,
+    "Demon": 3,
+    "Dragon": 4,
+    "Elemental": 5,
+    "Naga": 6,
+    "Quilboar": 7,
+    "Pirate": 8,
+    "Undead": 9,
+}
+
+
+def encode_minion(minion, source_flag, slot_idx=None):
+    tribes = torch.zeros(10)  # Assuming 10 tribe slots (no 'None')
+
+    if minion is not None:
+        types = minion.types or []
+
+        if "All" in types:
+            tribes[:] = 1
+        else:
+            for tribe in types:
+                if tribe is None:
+                    continue  # safely skip [None]
+                if tribe in TRIBE_TO_INDEX:
+                    tribes[TRIBE_TO_INDEX[tribe]] = 1
+
+
+        base = torch.tensor([
+            float(minion.attack),
+            float(minion.health),
+            float(minion.tier),
+        ], dtype=torch.float32)
+
+        slot_feature = torch.tensor(
+            [slot_idx / 7.0], dtype=torch.float32
+        ) if slot_idx is not None else torch.tensor([0.0])
+
+        out = torch.cat([base, tribes, torch.tensor([source_flag], dtype=torch.float32), slot_feature])
+        return out
+
+    except Exception as e:
+        print(f"❌ Failed to encode minion: {minion.name}, error: {e}")
+        return torch.zeros(16)
+
+
+
 class Minion:
     def __init__(self, name, types, attack, health, tier, keywords=None):
         self.name = name
@@ -71,16 +120,6 @@ class TinyBattlegroundsEnv:
             if isinstance(agent, TransformerAgent):
                 agent.env = self
 
-
-
-
-    def get_ghost_board(self):
-        if not self.dead:
-            return []
-        most_recent_dead_agent = list(self.dead.keys())[-1]
-        return most_recent_dead_agent.board
-
-
     def roll_shop(self, tier):
         pool = [m for m in MINION_POOL if m.tier <= tier]
 
@@ -102,12 +141,8 @@ class TinyBattlegroundsEnv:
         actions = []
         upgrade_cost = self.get_upgrade_cost(agent)
 
-        if agent.tier < 6:
-            upgrade_cost = self.get_upgrade_cost(agent)
-            if agent.gold >= upgrade_cost:
-                actions.append("level")
-
-
+        if agent.tier < 6 and agent.gold >= upgrade_cost:
+            actions.append("level")
 
         if agent.shop:
             for idx, minion in enumerate(agent.shop):
@@ -195,10 +230,6 @@ class TinyBattlegroundsEnv:
         if best_candidate:
             self.latest_dead_agent = best_candidate
 
-
-
-
-
     def build_active_state(self, agent):
         gold = agent.gold
         gold_cap = agent.gold_cap
@@ -260,6 +291,70 @@ class TinyBattlegroundsEnv:
 
         return torch.tensor(state_vector, dtype=torch.float32)
 
+    def build_transformer_state(self, agent, phase="active"):
+        # === Basic info ===
+        state_vec = torch.tensor([
+            agent.tier,
+            agent.health,
+            self.turn
+        ], dtype=torch.float32)
+
+        # === Econ info ===
+        if phase == "active":
+            econ_vec = torch.tensor([
+                agent.gold,
+                agent.gold_cap,
+                1.0,               # fixed roll cost
+                agent.upgrade_cost
+            ], dtype=torch.float32)
+
+            shop_minions = [
+                encode_minion(m, source_flag=0, slot_idx=3 + i)
+                for i, m in enumerate(agent.shop)
+            ]
+        else:
+            econ_vec = torch.tensor([0.0, agent.gold_cap, 0.0, 0.0], dtype=torch.float32)
+            shop_minions = []
+
+        # === Tier vector ===
+        tier_vec = torch.tensor([
+            1 if i < agent.tier else 0 for i in range(6)
+        ], dtype=torch.float32)
+
+        # === Board minions ===
+        board_minions = [
+            encode_minion(m, source_flag=1, slot_idx=i)
+            for i, m in enumerate(agent.board)
+        ]
+
+        # === Opponent summary ===
+        opponent = self.current_opponent.get(agent, None)
+        opponent_vec = None
+        if opponent and hasattr(agent, "opponent_memory") and opponent in agent.opponent_memory:
+            opponent_vec = torch.tensor(agent.opponent_memory[opponent], dtype=torch.float32)
+
+        # === NaN cleanup just in case ===
+        econ_vec = torch.nan_to_num(econ_vec)
+
+        # === Token assembly ===
+        token_inputs = {
+            "state_vec": state_vec,
+            "econ_vec": econ_vec,
+            "tier_vec": tier_vec,
+            "board_minions": board_minions,
+            "shop_minions": shop_minions,
+            "opponent_vec": opponent_vec
+        }
+
+        return agent.build_tokens(**token_inputs)
+
+    def build_state(self, agent, phase="active"):
+        if isinstance(agent, TransformerAgent):
+            player_id = self.agents.index(agent)
+            return self.build_transformer_state(agent, phase)
+        else:
+            return self.build_active_state(agent) if phase == "active" else self.build_combat_state(agent)
+
 
     def step(self, verbose=False, focus_agent_name=None):
         # ⚔️ --- Match Making ---
@@ -284,6 +379,8 @@ class TinyBattlegroundsEnv:
             agent.gold_cap = min(3 + self.turn - 1, 10)
             agent.gold = agent.gold_cap
 
+
+
             if verbose and agent.name == focus_agent_name:
                 print(f"\n--- Turn {self.turn} ---")
                 print(f"Gold: {agent.gold}, Health: {agent.health}, Tier: {agent.tier}")
@@ -295,12 +392,12 @@ class TinyBattlegroundsEnv:
                     print(f"  [{idx}] {m.name} ({m.attack}/{m.health})")
 
             while agent.gold > 0:
-                state = agent.build_state(self, phase="active")
                 available_actions = self.get_available_actions(agent)
 
                 if not available_actions:
                     break
-
+                
+                self.build_state()
                 action = agent.act(state)
                 action_str = available_actions[action % len(available_actions)]
 
