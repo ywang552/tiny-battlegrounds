@@ -19,12 +19,10 @@ class TransformerAgent:
         self.memory = []
         self.mmr = 0
         self.opponent_memory = {}  # opponent_id → summary vector
-        self.env = None  # will be set later by the environment
-
         # === Token Embedding Layers ===
         self.state_embed = nn.Linear(3, embed_dim)  # [tier, health, turn]
         self.minion_embed = nn.Linear(15, embed_dim)  # [atk, hp, tier, tribes (10), source_flag, slot_idx]
-        self.econ_embed = nn.Linear(4, embed_dim)  # [gold, gold_cap, reroll_cost, upgrade_cost]
+        self.econ_embed = nn.Linear(5, embed_dim)  # [gold, gold_cap, reroll_cost, upgrade_cost]
         self.tier_projector = nn.Linear(6, embed_dim)  # frozen projection
         self.tier_projector.weight.requires_grad = False
         self.tier_projector.bias.requires_grad = False
@@ -83,9 +81,18 @@ class TransformerAgent:
 
     def build_tokens(self, state_vec, board_minions, shop_minions, econ_vec, tier_vec, opponent_vec=None):
         tokens = []
+    
+        # Add board commitment signal
+        board_commitment = torch.tensor([len(board_minions) / 7.0])
+    
+        # Concatenate to econ vec
+        enhanced_econ = torch.cat([econ_vec, board_commitment])
+
         tokens.append(self.state_embed(state_vec))
-        tokens.append(self.econ_embed(econ_vec))
+        tokens.append(self.econ_embed(enhanced_econ))
         tokens.append(self.tier_projector(tier_vec))
+
+
 
         # ✅ board_minions and shop_minions already include slot index in encode_minion()
         for minion in board_minions:
