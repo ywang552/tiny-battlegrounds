@@ -12,6 +12,7 @@ with open("data/minion_pool.json", "r") as f:
 
 
 class TransformerAgent:
+
     def __init__(self, name="TransformerAgent", action_size=5, embed_dim=128, num_heads=4, num_layers=2):
         self.name = name
         self.action_size = action_size
@@ -22,7 +23,7 @@ class TransformerAgent:
         # === Token Embedding Layers ===
         self.state_embed = nn.Linear(3, embed_dim)  # [tier, health, turn]
         self.minion_embed = nn.Linear(15, embed_dim)  # [atk, hp, tier, tribes (10), source_flag, slot_idx]
-        self.econ_embed = nn.Linear(5, embed_dim)  # [gold, gold_cap, reroll_cost, upgrade_cost]
+        self.econ_embed = nn.Linear(6, embed_dim)  # [gold, gold_cap, reroll_cost, upgrade_cost]
         self.tier_projector = nn.Linear(6, embed_dim)  # frozen projection
         self.tier_projector.weight.requires_grad = False
         self.tier_projector.bias.requires_grad = False
@@ -79,14 +80,19 @@ class TransformerAgent:
         self.opponent_memory[opponent] = summary
 
 
-    def build_tokens(self, state_vec, board_minions, shop_minions, econ_vec, tier_vec, opponent_vec=None):
+    def build_tokens(self, state_vec, board_minions, shop_minions, econ_vec, tier_vec, current_turn=None, opponent_vec=None):
+        # Add turn progression signal (0-1 normalized)
+        turn_progress = torch.tensor([current_turn / 20.0]) if current_turn is not None else torch.tensor([0.0])
+        
+        # Enhanced econ embedding
+        enhanced_econ = torch.cat([
+            econ_vec,
+            turn_progress,
+            torch.tensor([len(board_minions) / 7.0])  # Board commitment
+        ])
+    
         tokens = []
     
-        # Add board commitment signal
-        board_commitment = torch.tensor([len(board_minions) / 7.0])
-    
-        # Concatenate to econ vec
-        enhanced_econ = torch.cat([econ_vec, board_commitment])
 
         tokens.append(self.state_embed(state_vec))
         tokens.append(self.econ_embed(enhanced_econ))
@@ -112,6 +118,7 @@ class TransformerAgent:
 
 
     def act(self, token_input):
+
         output = self.transformer(token_input)  # [1, N+1, embed_dim]
         cls_output = output[0, 0]  # [embed_dim]
 
@@ -145,6 +152,8 @@ class TransformerAgent:
         return action
 
     def observe(self, state, reward, turn=None):
+        self.current_turn = turn  # NEW: Store turn when observing
+    # ... rest of original code ...
         """Ensure all entries have value estimates"""
         with torch.no_grad():
             # Generate value estimate for all observations

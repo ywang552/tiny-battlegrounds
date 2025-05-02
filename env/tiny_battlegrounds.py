@@ -324,7 +324,7 @@ class TinyBattlegroundsEnv:
             ], dtype=torch.float32)
 
             shop_minions = []
-            for i in range(7):  # or range(6) if you prefer
+            for i in range(6):  # or range(6) if you prefer
                 if i < len(agent.shop):
                     shop_minions.append(encode_minion(agent.shop[i], source_flag=0, slot_idx=i))
                 else:
@@ -343,7 +343,7 @@ class TinyBattlegroundsEnv:
             # === No shop minions during combat
             shop_minions = [
                 encode_minion(None, source_flag=0, slot_idx=i)
-                for i in range(7)  # or 6, depending on your standard
+                for i in range(6)  # or 6, depending on your standard
             ]
 
             # === Opponent vector using passed-in kwargs
@@ -378,17 +378,15 @@ class TinyBattlegroundsEnv:
                 board_minions.append(encode_minion(None, source_flag=1, slot_idx=i))  # padded empty slot
 
 
-        # === Token assembly ===
-        token_inputs = {
-            "state_vec": state_vec,
-            "econ_vec": econ_vec,
-            "tier_vec": tier_vec,
-            "board_minions": board_minions,
-            "shop_minions": shop_minions,
-            "opponent_vec": opponent_vec
-        }
-
-        return agent.build_tokens(**token_inputs)
+        return agent.build_tokens(
+            state_vec=state_vec,
+            board_minions=board_minions,
+            shop_minions=shop_minions,
+            econ_vec=econ_vec,
+            tier_vec=tier_vec,
+            current_turn=self.turn,  # Explicitly passed here
+            opponent_vec=opponent_vec
+        )
 
     def build_state(self, agent, phase="active", **kwargs):
         """Polymorphic state builder that works for both agent types"""

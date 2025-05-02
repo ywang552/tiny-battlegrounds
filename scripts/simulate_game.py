@@ -27,7 +27,7 @@ def simulate_single_game(agent):
     env = TinyBattlegroundsEnv(all_agents)
 
     print("\n=== Starting Single Game Simulation ===\n")
-    env.play_game(verbose=True, focus_agent_name=agent.name)  # 🔥 Focus only on your agent
+    env.play_game(verbose=False, focus_agent_name=agent.name)  # 🔥 Focus only on your agent
 
     print("\n=== Game Over ===")
     for a in env.agents:
