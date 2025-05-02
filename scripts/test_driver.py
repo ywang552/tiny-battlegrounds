@@ -2,10 +2,10 @@ import torch
 from agents.transformer_agent import TransformerAgent
 from env.tiny_battlegrounds import TinyBattlegroundsEnv
 
-def run_test_game(num_agents=8, verbose=True, focus_agent_name="TAgent_0"):
+def run_test_game(num_agents=8, verbose=True, focus_agent_name="TransFormerAgent_0"):
     print("🚀 Launching test game...")
 
-    agents = [TransformerAgent(name=f"TAgent_{i}") for i in range(num_agents)]
+    agents = [TransformerAgent(name=f"TransFormerAgent_{i}") for i in range(num_agents)]
     env = TinyBattlegroundsEnv(agents)
 
     rewards = env.play_game(verbose=verbose, focus_agent_name=focus_agent_name)
@@ -21,7 +21,7 @@ def run_test_game(num_agents=8, verbose=True, focus_agent_name="TAgent_0"):
     print("\n=== Opponent Memory Sample (First Agent) ===")
     if isinstance(agents[0], TransformerAgent):
         for k, v in agents[0].opponent_memory.items():
-            print(f"Opponent {k}: {v}")
+            print(f"Opponent {k.name}: {v}")
 
     return agents, env
 

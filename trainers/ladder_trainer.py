@@ -46,29 +46,51 @@ def matchmake(agents, game_size):
 def run_game(agent_group):
     env = TinyBattlegroundsEnv(agent_group)
     rewards = env.play_game()
+    
     for agent in agent_group:
-        agent.learn(rewards[agent.name])
+        try:
+            agent.learn(rewards[agent.name])
+        except Exception as e:
+            print(f"⚠️ Learning failed for {agent.name}: {e}")
+            continue
+            
     return [a.mmr for a in agent_group]
 
-# === SNAPSHOT EVALUATION ===
 def evaluate_against_snapshots(agent, snapshot_paths):
+    """Evaluates current agent against historical snapshots"""
     opponents = []
     for path in snapshot_paths:
         try:
             if AGENT_TYPE == "transformer":
                 clone = TransformerAgent(name=f"Snapshot_{os.path.basename(path)}")
                 clone.load(path)
+                # Critical: Reset all episodic trackers
+                clone.memory = []
+                clone.turns_skipped_this_game = 0
+                clone.gold_spent_this_game = 0 
+                clone.minions_bought_this_game = 0
             else:
                 clone = SelfLearningAgent(20, 5, name=f"Snapshot_{os.path.basename(path)}")
                 clone.load(path)
+                clone.memory = []
+            
             opponents.append(clone)
+            
         except Exception as e:
             print(f"⚠️ Failed to load snapshot {path}: {e}")
+            continue
 
-    eval_group = opponents + [agent]
+    # Create evaluation environment
+    eval_group = [agent] + opponents
     env = TinyBattlegroundsEnv(eval_group)
-    env.play_game(verbose=False)
-    print(f"\n📊 Evaluation of {agent.name} against {[op.name for op in opponents]} done.")
+    
+    # Run game with verbose output for the test agent
+    rewards = env.play_game(verbose=True, focus_agent_name=agent.name)
+    
+    # Print evaluation results
+    print(f"\n📊 Evaluation Results for {agent.name}:")
+    for a in eval_group:
+        print(f"  {a.name}: MMR Δ = {rewards.get(a.name, 0):+.1f} (New MMR: {a.mmr:.1f})")
 
 # === PLOTTING ===
 def plot_mmr(agents, history, gen):

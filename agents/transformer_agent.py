@@ -23,14 +23,16 @@ class TransformerAgent:
 
         # === Token Embedding Layers ===
         self.state_embed = nn.Linear(3, embed_dim)  # [tier, health, turn]
-        self.minion_embed = nn.Linear(16, embed_dim)  # [atk, hp, tier, tribes (11), source_flag, slot_idx]
+        self.minion_embed = nn.Linear(15, embed_dim)  # [atk, hp, tier, tribes (10), source_flag, slot_idx]
         self.econ_embed = nn.Linear(4, embed_dim)  # [gold, gold_cap, reroll_cost, upgrade_cost]
         self.tier_projector = nn.Linear(6, embed_dim)  # frozen projection
         self.tier_projector.weight.requires_grad = False
         self.tier_projector.bias.requires_grad = False
-        self.opponent_embed = nn.Linear(7, embed_dim)  # summary vector: 6 + opponent_id
+        self.opponent_embed = nn.Linear(4, embed_dim)  # summary vector: 6 + opponent_id
         self.cls_token = nn.Parameter(torch.zeros(1, embed_dim))
-
+        self.turns_skipped_this_game = 0 
+        self.gold_spent_this_game = 0 
+        self.minions_bought_this_game = 0 
         # === Transformer ===
         encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, dim_feedforward=4*embed_dim, batch_first=True)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
@@ -42,6 +44,15 @@ class TransformerAgent:
         # === Optimizer ===
         self.optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
 
+        self.behavior_counts = {
+            "buy": 0,
+            "sell": 0,
+            "roll": 0,
+            "level": 0,
+            "end_turn": 0,
+        }
+
+
     def parameters(self):
         return list(self.state_embed.parameters()) + \
                list(self.minion_embed.parameters()) + \
@@ -51,6 +62,24 @@ class TransformerAgent:
                list(self.transformer.parameters()) + \
                list(self.policy_head.parameters()) + \
                list(self.value_head.parameters()) + [self.cls_token]
+    
+    def _update_opponent_memory(self, opponent, turn):
+        if opponent is None:
+            return
+
+        if not hasattr(self, "opponent_memory"):
+            self.opponent_memory = {}
+
+        # Always update with fresh summary
+        strength = sum(m.attack + m.health for m in opponent.board)
+        summary = [
+            float(opponent.tier),
+            float(strength),
+            0.0,  # hp_delta only known at build_state time
+            float(turn) 
+        ]
+        self.opponent_memory[opponent] = summary
+
 
     def build_tokens(self, state_vec, board_minions, shop_minions, econ_vec, tier_vec, opponent_vec=None):
         tokens = []
@@ -74,75 +103,6 @@ class TransformerAgent:
 
         return all_tokens
 
-    
-    @staticmethod
-    def build_token_inputs_from_env(env, player_id, phase="active", **kwargs):
-        player = env.agents[player_id]
-        opponent_id = env.current_opponent.get(player_id, None)
-
-        # === State token: [tier, health, turn] — same for all phases
-        state_vec = torch.tensor([
-            player.tier,
-            player.health,
-            env.turn
-        ], dtype=torch.float32)
-
-        if phase == "active":
-            # === Econ token: real values during buy phase
-            econ_vec = torch.tensor([
-                player.gold,
-                player.gold_cap,
-                1,  # can be replaced with dynamic reroll cost if needed
-                env.get_upgrade_cost(player),
-            ], dtype=torch.float32)
-
-            # === Shop tokens
-            shop_minions = [
-                encode_minion(minion, source_flag=0, slot_idx=3 + i)
-                for i, minion in enumerate(player.shop)
-            ]
-
-        else:  # combat phase
-            # === Zeroed econ token (no shop during combat)
-            econ_vec = torch.tensor([
-                0.0, player.gold_cap, 0.0, 0.0
-            ], dtype=torch.float32)
-
-            # === No shop minions during combat
-            shop_minions = []
-
-        # === Tier token: 1/0 flags for available tiers
-        tier_vec = torch.tensor([
-            1 if i < player.tier else 0 for i in range(6)
-        ], dtype=torch.float32)
-
-        # === Board minions
-        board_minions = [
-            encode_minion(minion, source_flag=1, slot_idx=i)
-            for i, minion in enumerate(player.board)
-        ]
-
-        # === Opponent memory (if available)
-        opponent_vec = None
-        if hasattr(player, 'opponent_memory') and opponent_id in player.opponent_memory:
-            opponent_summary = player.opponent_memory[opponent_id]
-            opponent_vec = torch.tensor(opponent_summary, dtype=torch.float32)
-        econ_vec = torch.nan_to_num(econ_vec, nan=0.0, posinf=0.0, neginf=0.0)
-
-        return {
-            "state_vec": state_vec,
-            "econ_vec": econ_vec,
-            "tier_vec": tier_vec,
-            "board_minions": board_minions,
-            "shop_minions": shop_minions,
-            "opponent_vec": opponent_vec
-        }
-
-    
-    def build_state(self, env, phase="active", **kwargs):
-        token_inputs = self.build_token_inputs_from_env(env, env.agents.index(self), phase, **kwargs)
-        return self.build_tokens(**token_inputs)
-    
 
     def act(self, token_input):
         output = self.transformer(token_input)  # [1, N+1, embed_dim]
@@ -169,39 +129,68 @@ class TransformerAgent:
         log_prob = torch.log(probs[action])
 
         self.memory.append({
+            "state": token_input,  # Add state reference
             "log_prob": log_prob,
             "value": value,
-            "reward": None  # to be filled in observe()
+            "reward": None,  # To be filled later
+            "turn": getattr(self, 'env', None).turn
         })
-
         return action
 
-    def observe(self, token_input, reward, opponent=None):
+    def observe(self, state, reward, turn=None):
+        """Ensure all entries have value estimates"""
+        with torch.no_grad():
+            # Generate value estimate for all observations
+            output = self.transformer(state)
+            cls_output = output[0, 0]
+            value = self.value_head(cls_output).squeeze()
+        
         self.memory.append({
-            "input": token_input,
-            "reward": reward
+            "state": state,
+            "reward": reward,
+            "turn": turn if turn is not None else getattr(self, 'env', None).turn,
+            "value": value  # Add value estimate to all entries
         })
 
-        if opponent is not None:
-            self._update_opponent_memory(opponent)
-
-    def learn(self, final_mmr, gamma=0.95, lambd=0.1):
+    def learn(self, final_mmr):
+        """Handle all memory entry formats safely"""
+        if not self.memory:
+            return
+            
+        # Get final turn safely
+        final_turn = max(entry.get("turn", 1) for entry in self.memory)
+        
+        # Process all entries
         policy_loss = []
         value_loss = []
-
+        
         for entry in self.memory:
-            r = entry["reward"] + lambd * final_mmr
-            adv = r - entry["value"]
-            policy_loss.append(-entry["log_prob"] * adv.detach())
-            value_loss.append(adv.pow(2))
-
-        loss = torch.stack(policy_loss).sum() + 0.5 * torch.stack(value_loss).sum()
-
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
+            # Skip entries missing required fields
+            if "value" not in entry:
+                continue
+                
+            # Calculate reward weighting
+            turn_weight = entry.get("turn", 1) / final_turn
+            reward = final_mmr * turn_weight
+            
+            # Handle both action and observation entries
+            if "log_prob" in entry:  # Action entry
+                advantage = reward - entry["value"]
+                policy_loss.append(-entry["log_prob"] * advantage.detach())
+                value_loss.append(advantage.pow(2))
+            else:  # Observation entry
+                value_loss.append((reward - entry["value"]).pow(2))
+        
+        if policy_loss or value_loss:
+            loss = (torch.stack(policy_loss).sum() if policy_loss else 0) + \
+                (0.5 * torch.stack(value_loss).sum() if value_loss else 0)
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+        
         self.memory.clear()
+
+
 
     def save(self, filepath):
         torch.save(self.state_dict(), filepath)

@@ -67,34 +67,40 @@ class SelfLearningAgent:
         })
         return action
 
-    def observe(self, next_state, reward, opponent=None):
-        if self.memory:
-            self.memory[-1]["next_state"] = next_state.detach()
-            self.memory[-1]["reward"] = reward
+    # In mlp_agent.py
+    def observe(self, state, reward, **kwargs):
+        """Store combat-relevant info if provided"""
+        if 'previous_health' in kwargs:
+            self.previous_health = kwargs['previous_health']
+        self.memory.append({
+            'state': state,
+            'reward': reward,
+            **kwargs
+        })
 
     def learn(self, final_mmr):
+        """Handle both turn-weighted and flat reward distribution"""
         if not self.memory:
             return
-
-        gamma = 0.95
-        λ = 0.1
+        
+        # Calculate final turn (safe fallback)
+        final_turn = max(entry.get("turn", 1) for entry in self.memory) if self.memory else 1
+        
         policy_losses = []
         value_losses = []
-
+        
         for entry in self.memory:
-            r = entry["reward"] + λ * final_mmr
-            s, s_, a = entry["state"], entry["next_state"], entry["action"]
-            log_prob, value = entry["log_prob"], entry["value"]
-
-            with torch.no_grad():
-                next_value = self.value_net(s_)
-
-            advantage = (r + gamma * next_value) - value
-            policy_losses.append(-log_prob * advantage.detach())
+            # Calculate turn-weighted reward if turn exists
+            turn = entry.get("turn", 1)
+            reward = final_mmr * (turn / final_turn) if "turn" in entry else final_mmr
+            
+            # Original learning logic
+            advantage = reward - entry.get("value", 0)
+            if "log_prob" in entry:  # Action entry
+                policy_losses.append(-entry["log_prob"] * advantage.detach())
             value_losses.append(advantage.pow(2))
-
+        
         loss = torch.stack(policy_losses).sum() + 0.5 * torch.stack(value_losses).sum()
-
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -129,3 +135,5 @@ class SelfLearningAgent:
             return env.build_combat_state(self, kwargs["previous_health"], kwargs["enemy_strength"])
         else:
             return env.build_active_state(self)
+
+
