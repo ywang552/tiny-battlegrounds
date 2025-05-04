@@ -11,6 +11,7 @@ class TransformerAgent(nn.Module):
 
     def __init__(self, name="TransformerAgent", action_size=16, embed_dim=128, num_heads=4, num_layers=2):
         super().__init__()
+        self.phase_embed = nn.Linear(1, embed_dim)
 
         self.name = name
         self.action_size = action_size
@@ -106,20 +107,18 @@ class TransformerAgent(nn.Module):
         # === Apply action mask (optional) ===
         if action_mask is not None:
             logits[~action_mask] = -float("inf")
+            if action_mask.sum() == 0:  # No valid actions
+                logits[:] = -float("inf")
+                logits[self.END_TURN_IDX] = 0.0  # Force end turn
+                print("⚠️ No valid actions - defaulting to end_turn")
 
-            ## TODO
-            # if action_mask.sum() == 0:
-            #     print("⚠️ No valid actions — forcing end_turn fallback")
-            #     logits[:] = -float("inf")
-            #     logits[self.END_TURN_IDX] = 0.0
-
-            # # 🔍 Debugging info
-            # print("🎯 Action Mask:", action_mask.tolist())
-            # print("📈 Masked Logits:", logits.tolist())
 
 
 
         probs = F.softmax(logits, dim=-1)
+        if not torch.isfinite(probs).all():
+            probs = torch.ones_like(probs) / len(probs)  # Uniform fallback
+            print("🚨 Invalid probs - using uniform distribution")
 
         if torch.isnan(probs).any() or torch.isinf(probs).any() or (probs < 0).any():
             print("🚨 Bad probs triggered!")
