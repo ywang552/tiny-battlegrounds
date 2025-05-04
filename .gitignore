@@ -1,7 +1,7 @@
 # Ignore Python cache
 __pycache__/
 *.py[cod]
-data
+data/figs
 models/__pycache__
 # Ignore temporary logs
 *.log
