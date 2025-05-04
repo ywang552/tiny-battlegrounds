@@ -7,27 +7,32 @@ from agents.transformer_agent import TransformerAgent
 
 AGENT_TYPE = "transformer"  # or "transformer"
 
-def make_agent(i):
-    if AGENT_TYPE == "transformer":
+def make_agent(i, agent_type = AGENT_TYPE):
+    if agent_type == "transformer":
         return TransformerAgent(name=f"Transformer_{i}")
-    elif AGENT_TYPE == "mlp":
-        return SelfLearningAgent(input_size=20, action_size=5, name=f"MLP_{i}")
+    elif agent_type == "mlp":
+        return SelfLearningAgent(input_size=19, action_size=5, name=f"MLP_{i}")
     else:
-        raise ValueError(f"Unsupported AGENT_TYPE: {AGENT_TYPE}")
+        raise ValueError(f"Unsupported agent_type: {agent_type}")
 
 
 
 def simulate_single_game(agent):
-    dummy_agents = [SelfLearningAgent(20, 5, name=f"Dummy_{i}") for i in range(7)]
-    for dummy in dummy_agents:
-        dummy.policy.eval()
+    ## TODO
+    # dummy_agents = [SelfLearningAgent(19, 16, name=f"Dummy_{i}") for i in range(7)]
+    # for dummy in dummy_agents:
+    #     dummy.policy.eval()
 
-    all_agents = dummy_agents + [agent]
+    agents = []
+    for i in range(7):
+        agents.append(make_agent(i, agent_type="transformer"))
 
+    all_agents = agents + [agent]
+    agent.name = "target"
     env = TinyBattlegroundsEnv(all_agents)
 
     print("\n=== Starting Single Game Simulation ===\n")
-    env.play_game(verbose=False, focus_agent_name=agent.name)  # 🔥 Focus only on your agent
+    env.play_game(verbose=True, focus_agent_name=agent.name)  # 🔥 Focus only on your agent
 
     print("\n=== Game Over ===")
     for a in env.agents:
@@ -42,5 +47,5 @@ def simulate_single_game(agent):
 if __name__ == "__main__":
     # ✨ Load your trained agent
     agent = make_agent(0)
-    agent.load("saved_models/BEST_Transformer_6_transformer_20250502_031217.pt")  # Example
+    agent.load("saved_models/BEST_Transformer_1_transformer_20250504_001207.pt")  # Example
     simulate_single_game(agent)

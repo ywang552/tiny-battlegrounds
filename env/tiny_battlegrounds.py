@@ -1,70 +1,7 @@
 import random
 import torch
-import matplotlib.pyplot as plt  # Add this at the top of your file if not imported yet
-import os
-import json
 from utils.load import load_minions
 from agents.transformer_agent import TransformerAgent
-
-
-
-TRIBE_TO_INDEX = {
-    "Beast": 0,
-    "Mech": 1,
-    "Murloc": 2,
-    "Demon": 3,
-    "Dragon": 4,
-    "Elemental": 5,
-    "Naga": 6,
-    "Quilboar": 7,
-    "Pirate": 8,
-    "Undead": 9,
-}
-
-
-def encode_minion(minion, source_flag, slot_idx=None):
-    tribes = torch.zeros(10)  # 10 tribe types, multi-hot
-    base = torch.zeros(3)     # [attack, health, tier]
-
-    if minion is not None:
-        types = minion.types or []
-
-        if "All" in types:
-            tribes[:] = 1
-        else:
-            for tribe in types:
-                if tribe is None:
-                    continue
-                if tribe in TRIBE_TO_INDEX:
-                    tribes[TRIBE_TO_INDEX[tribe]] = 1
-
-        base = torch.tensor([
-            float(minion.attack),
-            float(minion.health),
-            float(minion.tier),
-        ], dtype=torch.float32)
-
-    # Normalize slot index
-    if source_flag == 0:  # shop: 0–5, normalize by 5
-        slot_feature = torch.tensor(
-            [slot_idx / 5.0], dtype=torch.float32
-        ) if slot_idx is not None else torch.tensor([0.0])
-    else:  # board: 0–6, normalize by 6
-        slot_feature = torch.tensor(
-            [slot_idx / 6.0], dtype=torch.float32
-        ) if slot_idx is not None else torch.tensor([0.0])
-
-    out = torch.cat([
-        base,                          # [3]
-        tribes,                        # [10]
-        torch.tensor([source_flag], dtype=torch.float32),  # [1]
-        slot_feature                   # [1]
-    ])
-
-    return out
-
-
-
 class Minion:
     def __init__(self, name, types, attack, health, tier, keywords=None):
         self.name = name
@@ -86,88 +23,251 @@ MINION_POOL = [Minion(**data) for data in load_minions(path)]
 
 # --- TinyBattlegrounds Environment ---
 class TinyBattlegroundsEnv:
+    # === GAME CONSTANTS ===
+    MINION_COST = 3
+    ROLL_COST = 1
+    MAX_BOARD_SIZE = 7
+    MAX_SHOP_SIZE = 6
+    INITIAL_GOLD = 3
+    MAX_TIER = 6
+
+        # === Action Space Index Mapping ===
+    BUY_START = 0
+    BUY_END = 5           # slots 0 to 5 (inclusive)
+
+    SELL_START = 6
+    SELL_END = 12         # slots 6 to 12 (inclusive)
+
+    ROLL_IDX = 13
+    LEVEL_IDX = 14
+    END_TURN_IDX = 15
+
+    ACTION_SIZE = 16      # total number of actions
+
+
+    SHOP_SLOTS = {
+        1: 3, 2: 4, 3: 4, 4: 5, 5: 5, 6: 6
+    }
+
+    TAVERN_UPGRADE_COST = {
+        1: 5, 2: 7, 3: 8, 4: 9, 5: 10
+    }
+
+    PLACEMENT_REWARDS = {
+        1: 80, 2: 60, 3: 40, 4: 20,
+        5: -20, 6: -40, 7: -60, 8: -80
+    }
+
+    @staticmethod
+    def encode_minion(minion, source_flag, slot_idx=None):
+        # More efficient tribe encoding
+        TRIBE_TO_INDEX = {
+            "Beast": 0, "Mech": 1, "Murloc": 2, "Demon": 3,
+            "Dragon": 4, "Elemental": 5, "Naga": 6, "Quilboar": 7,
+            "Pirate": 8, "Undead": 9, "None": 10
+        }
+
+        # Initialize with zeros (more memory efficient)
+        tribes = torch.zeros(11)  # Now includes "None" explicitly
+        base = torch.zeros(3)     # [attack, health, tier]
+
+        if minion is not None:
+            # Handle tribes more efficiently
+            types = minion.types or ["None"]
+            if "All" in types:
+                tribes[:10] = 1  # Set all tribes to 1 except "None"
+            else:
+                for tribe in types:
+                    idx = TRIBE_TO_INDEX.get(tribe, 10)  # Default to "None"
+                    tribes[idx] = 1
+
+            base = torch.tensor([
+                float(minion.attack),
+                float(minion.health),
+                float(minion.tier),
+            ], dtype=torch.float32)
+
+        # More robust slot feature handling
+        max_slot = 5.0 if source_flag == 0 else 6.0  # shop vs board
+        slot_feature = torch.tensor(
+            [slot_idx / max_slot] if slot_idx is not None else [0.0],
+            dtype=torch.float32
+        )
+
+        return torch.cat([
+            base,                          # [3]
+            tribes,                        # [11]
+            torch.tensor([source_flag]),    # [1]
+            slot_feature                   # [1]
+        ])  # Total dim: 16
+
     def __init__(self, agents):
         self.agents = agents
         self.turn = 1
         self.dead = {}  # {agent: turn number}
         self.latest_dead_agent = None
-
-    def get_base_upgrade_cost(self, tier):
-        upgrade_table = {
-            1: 5,
-            2: 7,
-            3: 8,
-            4: 9,
-            5: 10,
-        }
-        return upgrade_table.get(tier, -1)
-
-    def get_upgrade_cost(self, agent):
-        return agent.tavern_upgrade_cost  # ✅ Use this instead of re-computing
-
+        self.setup()
 
     def setup(self):
-        self.turn = 1
-        self.dead = {}
-        self.latest_dead_agent = None
-
         for agent in self.agents:
-            agent.gold_cap = 3
-            agent.gold = 3
+            agent.gold_cap = self.INITIAL_GOLD
+            agent.gold = self.INITIAL_GOLD
             agent.tier = 1
             agent.board = []
             agent.health = 40
             agent.alive = True
+            agent.opponent_memory = {}  # opponent_id → summary vector
             agent.shop = self.roll_shop(agent.tier)
             agent.gold_spent_this_game = 0
+            agent.gold_spent_this_turn = 0
+            agent.gold_earned_this_turn = 0
             agent.minions_bought_this_game = 0
             agent.turns_skipped_this_game = 0
             agent.behavior_counts = {'buy': 0, 'sell': 0, 'roll': 0, 'level': 0, 'end_turn': 0}
-            agent.tavern_upgrade_cost = self.get_base_upgrade_cost(agent.tier)  # ✅ One-time init
-            if isinstance(agent, TransformerAgent):
-                agent.env = self
+            agent.tavern_upgrade_cost = self.TAVERN_UPGRADE_COST.get(agent.tier, -1)
 
-    def roll_shop(self, tier):
-        pool = [m for m in MINION_POOL if m.tier <= tier]
+    def step(self, verbose=False, focus_agent_name=None):
+        self._prepare_matchups()
+        self._run_active_phase(verbose, focus_agent_name)
+        self._run_combat_phase()
+        self.remove_dead()
 
-        if tier == 1:
-            slots = 3
-        elif tier in [2, 3]:
-            slots = 4
-        elif tier in [4, 5]:
-            slots = 5
-        elif tier == 6:
-            slots = 6
-        else:
-            slots = 3  # default safety
+    def _prepare_matchups(self):
+        alive_agents = [a for a in self.agents if a.alive]
+        self.match_pairs = self.matchmaking(alive_agents)
+        self.current_opponent = {}
+
+        for p1, p2 in self.match_pairs:
+            if p2 is None:
+                self.current_opponent[p1] = None
+            else:
+                self.current_opponent[p1] = p2
+                self.current_opponent[p2] = p1
+
+    def _run_active_phase(self, verbose, focus_agent_name):
+        for agent in self.agents:
+            if not agent.alive:
+                continue
+            self._setup_agent_turn(agent, verbose, focus_agent_name)
+            self._simulate_agent_turn(agent, verbose, focus_agent_name)
         
-        return random.sample(pool, min(slots, len(pool)))
+        self._reduce_upgrade_costs(verbose, focus_agent_name)
+
+    def _setup_agent_turn(self, agent, verbose=False, focus_agent_name=None):
+        # Refresh gold cap based on turn number
+        agent.gold_cap = min(self.INITIAL_GOLD + self.turn - 1, 10)
+        agent.gold = agent.gold_cap
+
+        agent.shop = self.roll_shop(agent.tier)
+        
+        ## TODO
+        if verbose and agent.name == focus_agent_name and agent.alive:
+            print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Agent_({focus_agent_name})-> turn: {self.turn}, gold: {agent.gold}, tavern: {agent.tier}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+
+    def _run_combat_phase(self):
+        for p1, p2 in self.match_pairs:
+            self.simulate_combat(p1, p2)
+
+    def _simulate_agent_turn(self, agent, verbose=False, focus_agent_name=None):
+
+        while agent.gold > 0:
+
+            mask = self.get_action_mask(agent)
+            state = self.build_state(agent, phase="active")
+            action = agent.act(state, action_mask=mask)
+            action_str = self.decode_action(agent, action)
 
 
-    def get_available_actions(self, agent):
-        actions = []
-        upgrade_cost = self.get_upgrade_cost(agent)
 
-        if agent.tier < 6 and agent.gold >= upgrade_cost:
-            actions.append("level")
+            self._record_behavior(agent, action_str)
+            if verbose and agent.name == focus_agent_name:
+                print(f"Action chosen: {action_str}")
 
-        if agent.shop:
-            for idx, minion in enumerate(agent.shop):
-                if agent.gold >= 3 and len(agent.board) < 7:
-                    actions.append(f"buy_{idx}")
+            if action_str == "end_turn":
+                self._handle_end_turn(agent, verbose, focus_agent_name)
+                break
+            elif action_str == "level":
+                self._handle_level(agent, verbose, focus_agent_name)
+            elif action_str.startswith("buy_"):
+                self._handle_buy(agent, int(action_str.split("_")[1]), verbose, focus_agent_name)
+            elif action_str == "roll":
+                self._handle_roll(agent)
+            elif action_str.startswith("sell_"):
+                self._handle_sell(agent, int(action_str.split("_")[1]), verbose, focus_agent_name)
 
-        if agent.gold >= 1:
-            actions.append("roll")
+    def _record_behavior(self, agent, action_str):
+        if hasattr(agent, "behavior_counts"):
+            for key in agent.behavior_counts:
+                if action_str.startswith(key):
+                    agent.behavior_counts[key] += 1
 
-        if agent.board:
-            for idx, minion in enumerate(agent.board):
-                actions.append(f"sell_{idx}")
+    def _handle_end_turn(self, agent, verbose, focus_agent_name):
+        if agent.gold > 5:
+            agent.turns_skipped_this_game += 1
+        if verbose and agent.name == focus_agent_name:
+            print(">> Ending turn early.")
+        state = self.build_state(agent, phase="active")
+        agent.observe(state, 0.0)
 
-        # 🔥 Always allow ending turn
-        actions.append("end_turn")
+    def _handle_level(self, agent, verbose, focus_agent_name):
+        cost = agent.tavern_upgrade_cost
+        if agent.gold >= cost:
+            agent.gold -= cost
+            agent.tier += 1
+            agent.tavern_upgrade_cost = self.TAVERN_UPGRADE_COST.get(agent.tier, -1)
+            agent.gold_spent_this_game += cost
+            agent.gold_spent_this_turn += cost
+            if verbose and agent.name == focus_agent_name:
+                print(f">> Upgraded to Tier {agent.tier}")
+        state = self.build_state(agent, phase="active")
+        agent.observe(state, 0.0)
 
-        return actions
+    def _handle_buy(self, agent, idx, verbose, focus_agent_name):
+        if agent.shop and idx < len(agent.shop) and agent.gold >= self.MINION_COST and len(agent.board) < self.MAX_BOARD_SIZE:
+            bought_minion = agent.shop[idx]
+            agent.gold -= self.MINION_COST
+            agent.board.append(agent.shop.pop(idx))
+            agent.minions_bought_this_game += 1
+            agent.gold_spent_this_turn += self.MINION_COST
+            agent.gold_spent_this_game += self.MINION_COST
+            if verbose and agent.name == focus_agent_name:
+                print(f">> Bought {bought_minion.name} ({bought_minion.attack}/{bought_minion.health})")
+        state = self.build_state(agent, phase="active")
+        agent.observe(state, 0.0)
 
+    def _handle_roll(self, agent):
+        if agent.gold >= self.ROLL_COST:
+            agent.gold -= self.ROLL_COST
+            agent.shop = self.roll_shop(agent.tier)
+            agent.gold_spent_this_game += 1
+            agent.gold_spent_this_turn += 1
+        state = self.build_state(agent, phase="active")
+        agent.observe(state, 0.0)
+
+    def _handle_sell(self, agent, idx, verbose, focus_agent_name):
+        if idx < len(agent.board):
+            sold_minion = agent.board.pop(idx)
+            agent.gold += 1
+            if verbose and agent.name == focus_agent_name:
+                print(f">> Sold {sold_minion.name} ({sold_minion.attack}/{sold_minion.health})")
+            agent.gold_earned_this_turn += 1
+        state = self.build_state(agent, phase="active")
+        agent.observe(state, 0.0)
+
+    def _reduce_upgrade_costs(self, verbose=False, focus_agent_name=None):
+        for agent in self.agents:
+            old_cost = agent.tavern_upgrade_cost
+            agent.tavern_upgrade_cost = max(old_cost - 1, 0)
+
+            if verbose and agent.name == focus_agent_name and agent.alive:
+
+                print(f"[Turn {self.turn}] {agent.name} (Tier {agent.tier}) upgrade cost: {old_cost} → {agent.tavern_upgrade_cost}")
+                print(agent.behavior_counts)
+                print(f"[Turn {self.turn}] {agent.name} spent:{agent.gold_spent_this_turn}, earned:{agent.gold_earned_this_turn}, start with: {agent.gold_cap}, remaining: {agent.gold}, net: {agent.gold_spent_this_turn + agent.gold - agent.gold_earned_this_turn - agent.gold_cap}")
+
+            agent.gold_spent_this_turn = 0 
+            agent.gold_earned_this_turn = 0
+            agent.behavior_counts = {'buy': 0, 'sell': 0, 'roll': 0, 'level': 0, 'end_turn': 0}
 
     def matchmaking(self, alive_agents):
         pairs = []
@@ -183,6 +283,54 @@ class TinyBattlegroundsEnv:
             pairs.append((alive_agents[i], alive_agents[i+1]))
 
         return pairs
+
+    def roll_shop(self, tier):
+        pool = [m for m in MINION_POOL if m.tier <= tier]
+        slots = self.SHOP_SLOTS.get(tier, -1)
+        return random.sample(pool, min(slots, len(pool)))
+
+    def get_action_mask(self, agent):
+
+        mask = torch.zeros(16, dtype=torch.bool)
+
+        for i in range(self.BUY_START, self.BUY_END + 1):
+            slot = i - self.BUY_START
+            if slot < len(agent.shop) and agent.gold >= self.MINION_COST and len(agent.board) < self.MAX_BOARD_SIZE:
+                mask[i] = True
+
+        for i in range(self.SELL_START, self.SELL_END + 1):
+            slot = i - self.SELL_START
+            if slot < len(agent.board):
+                mask[i] = True
+
+        if agent.gold >= self.ROLL_COST:
+            mask[self.ROLL_IDX] = True
+
+        if agent.tier < self.MAX_TIER and agent.gold >= agent.tavern_upgrade_cost:
+            mask[self.LEVEL_IDX] = True
+
+        mask[self.END_TURN_IDX] = True
+
+        return mask
+
+    def decode_action(self, agent, action_idx):
+        if self.BUY_START <= action_idx <= self.BUY_END:
+            idx = action_idx - self.BUY_START
+            return f"buy_{idx}"
+        elif self.SELL_START <= action_idx <= self.SELL_END:
+            idx = action_idx - self.SELL_START
+            return f"sell_{idx}"
+        elif action_idx == self.ROLL_IDX:
+            return "roll"
+        elif action_idx == self.LEVEL_IDX:
+            return f"level to {agent.tier + 1}"
+
+        elif action_idx == self.END_TURN_IDX:
+            return "end_turn"
+
+        return "invalid"
+
+
 
     def simulate_combat(self, a, d):
         m1 = sum(m.strength() for m in a.board)
@@ -245,148 +393,232 @@ class TinyBattlegroundsEnv:
         if best_candidate:
             self.latest_dead_agent = best_candidate
 
-    def build_active_state(self, agent):
-        gold = agent.gold
-        gold_cap = agent.gold_cap
-        tier = agent.tier
-        health = agent.health
-        turn_number = self.turn
+    def _mark_survivors_as_dead(self):
+        for agent in self.agents:
+            if agent.alive and agent not in self.dead:
+                self.dead[agent] = self.turn
 
-        board_strength = sum(m.strength() for m in agent.board)
-        num_minions = len(agent.board)
+    def _clamp_mmr(self):
+        for agent in self.agents:
+            agent.mmr = max(0, agent.mmr)
 
-        shop_slots = [m.tier for m in agent.shop]
-        while len(shop_slots) < 6:
-            shop_slots.append(0)
+    def play_game(self, verbose=False, focus_agent_name=None):
+        while sum(1 for agent in self.agents if agent.alive) > 1:
+            self.step(verbose=verbose, focus_agent_name=focus_agent_name)
+            self.turn += 1
 
-        # Pad unused combat-related features
-        health_delta = 0.0
-        previous_health = 0.0
-        enemy_strength = 0.0
+        self._mark_survivors_as_dead()
+        self._clamp_mmr()
 
-        state_vector = [
-            gold, gold_cap, tier, health, turn_number,
-            board_strength, num_minions,
-            *shop_slots,              # 6 elements
-            previous_health,          # combat-only
-            health_delta,             # combat-only
-            enemy_strength            # combat-only
-        ]
+        return self.calculate_rewards()
 
-        # Pad up to 20 if we add more features later
-        while len(state_vector) < 20:
-            state_vector.append(0.0)
+    def _group_agents_by_death_turn(self, ordered_deaths):
+        grouped = []
+        idx = 0
+        while idx < len(ordered_deaths):
+            group = [ordered_deaths[idx]]
+            idx += 1
+            while idx < len(ordered_deaths) and ordered_deaths[idx][1] == group[0][1]:
+                group.append(ordered_deaths[idx])
+                idx += 1
+            grouped.append(group)
+        return grouped
 
-        return torch.tensor(state_vector, dtype=torch.float32)
-    
-    def build_combat_state(self, agent, previous_health, enemy_strength):
-        current_health = agent.health
-        health_delta = previous_health - current_health
-        turn_number = self.turn
-        tier = agent.tier
-        board_strength = sum(m.strength() for m in agent.board)
-        num_minions = len(agent.board)
-        gold_cap = agent.gold_cap
+    def calculate_rewards(self):
+        ordered_deaths = sorted(self.dead.items(), key=lambda x: (x[1], random.random()))
+        placement_groups = self._group_agents_by_death_turn(ordered_deaths)
 
-        # Pad shop-related fields
-        gold = 0.0
-        shop_slots = [0.0] * 6  # zero for shop_slot_0 to shop_slot_5
+        rewards = {}
+        current_place = len(self.agents)
 
-        state_vector = [
-            gold, gold_cap, tier, current_health, turn_number,
-            board_strength, num_minions,
-            *shop_slots,         # inactive phase doesn't access shop
-            previous_health,
-            health_delta,
-            enemy_strength
-        ]
+        for group in placement_groups:
+            size = len(group)
+            reward_sum = sum(self.PLACEMENT_REWARDS.get(current_place - i, -80) for i in range(size))
+            average = reward_sum / size
 
-        while len(state_vector) < 20:
-            state_vector.append(0.0)
+            for agent, _ in group:
+                rewards[agent.name] = average
+                agent.mmr += average
+                agent.mmr = max(0, agent.mmr)
 
-        return torch.tensor(state_vector, dtype=torch.float32)
+            current_place -= size
+
+        return rewards
+
+    def _get_enemy_summary(self, agent, opponent):
+        if opponent in agent.opponent_memory:
+            last_turn, last_strength, old_tier = agent.opponent_memory[opponent]
+            current_tier = opponent.tier
+            alive = float(getattr(opponent, 'alive', 1.0))  # More robust attribute check
+            return torch.tensor([
+                last_turn, 
+                last_strength, 
+                old_tier,
+                current_tier,
+                alive
+            ], dtype=torch.float32)
+        return torch.zeros(5)  # Default: no enemy data
+
+    def _update_opponent_memory(self, agent, combat_vec):
+        opponent = self.current_opponent.get(agent)
+        assert opponent, f"Invalid Opponent! Dictionary: {self.current_opponent}, Agent: {agent.name}"
+        agent.opponent_memory[opponent] = (self.turn, combat_vec[1], opponent.tier)  # (turn, strength)
+
+    def _build_action_mask(self, agent, phase):
+        mask = torch.zeros(16, dtype=torch.bool)
+        if phase == "active":
+            # Buy actions
+            buyable = agent.gold >= self.MINION_COST
+            mask[self.BUY_START:self.BUY_START + len(agent.shop)] = buyable
+            
+            # Other actions
+            mask[self.ROLL_IDX] = agent.gold >= self.ROLL_COST
+            mask[self.LEVEL_IDX] = agent.gold >= agent.tavern_upgrade_cost
+            mask[self.SELL_START:self.SELL_START + len(agent.board)] = True
+            mask[self.END_TURN_IDX] = True
+        return mask
+
 
     def build_transformer_state(self, agent, phase="active", **kwargs):
-        # === Basic info ===
+        # === 1. Phase Validation ===
+        assert phase in ["active", "combat"], f"Invalid Phase: {phase}"
+        
+        # === 2. Basic State ===
         state_vec = torch.tensor([
-            agent.tier,
-            agent.health,
-            self.turn
+            float(agent.health), 
+            float(agent.tier), 
+            float(self.turn)
         ], dtype=torch.float32)
-
-        # === Econ info ===
+        
+        # === 3. Phase-Specific Logic ===
         if phase == "active":
             econ_vec = torch.tensor([
-                agent.gold,
-                agent.gold_cap,
-                1.0,               # fixed roll cost
-                agent.tavern_upgrade_cost
+                float(agent.gold),
+                float(agent.gold_cap),
+                1.0  # Roll cost
             ], dtype=torch.float32)
+            
+            opponent = self.current_opponent.get(agent)
+            enemy_vec = self._get_enemy_summary(agent, opponent) if opponent else torch.zeros(5)
+        else:
+            combat_vec = torch.tensor([
+                float(kwargs.get("hp_delta", 0.0)),
+                float(kwargs.get("enemy_strength", 0.0))
+            ], dtype=torch.float32)
+            
+            opponent = self.current_opponent.get(agent)
+            if opponent:
+                self._update_opponent_memory(agent, combat_vec)
 
-            shop_minions = []
-            for i in range(6):  # or range(6) if you prefer
-                if i < len(agent.shop):
-                    shop_minions.append(encode_minion(agent.shop[i], source_flag=0, slot_idx=i))
-                else:
-                    shop_minions.append(encode_minion(None, source_flag=0, slot_idx=i))  # empty slot
+        
+        # === 4. Minion Encoding with Padding ===
+        def pad_sequence(sequence, max_len, source_flag):
+            encoded = [self.encode_minion(m, source_flag, i) for i, m in enumerate(sequence)]
+            padding = [self.encode_minion(None, source_flag) for _ in range(max_len - len(sequence))]
+            return torch.stack(encoded + padding)
+        
+        board_minions = pad_sequence(agent.board, self.MAX_BOARD_SIZE, 1)  # 7 board slots
+        shop_minions = pad_sequence(agent.shop, self.MAX_SHOP_SIZE, 0) if phase == "active" else torch.zeros(self.MAX_BOARD_SIZE, 16)
+        
+        # === 5. Assemble Output ===
+        return {
+            "tokens": {
+                "state": state_vec,
+                "phase": torch.tensor([1.0 if phase == "active" else 0.0]),
+                "econ": econ_vec if phase == "active" else torch.zeros(3),
+                "enemy": enemy_vec if phase == "active" else torch.zeros(5),
+                "combat": combat_vec if phase == "combat" else torch.zeros(2),
+                "board": board_minions,
+                "shop": shop_minions
+            },
+            "masks": {
+                "action": self._build_action_mask(agent, phase),
+                "attention": torch.ones(1)  # Dummy mask
+            }
+        }
 
 
-            opponent = self.current_opponent.get(agent, None)
-            opponent_vec = None
-            if opponent in agent.opponent_memory:
-                opponent_vec = torch.tensor(agent.opponent_memory[opponent], dtype=torch.float32)
+    # def build_transformer_state(self, agent, phase="active", **kwargs):
+    #     # === Basic info ===
+    #     state_vec = torch.tensor([
+    #         agent.tier,
+    #         agent.health,
+    #         self.turn
+    #     ], dtype=torch.float32)
 
-        if phase == "combat":
-            # === Combat econ vector (no shop)
-            econ_vec = torch.tensor([0.0, agent.gold_cap, 0.0, 0.0], dtype=torch.float32)
+    #     # === Econ info ===
+    #     if phase == "active":
+    #         econ_vec = torch.tensor([
+    #             agent.gold,
+    #             agent.gold_cap,
+    #             1.0,               # fixed roll cost
+    #             agent.tavern_upgrade_cost
+    #         ], dtype=torch.float32)
 
-            # === No shop minions during combat
-            shop_minions = [
-                encode_minion(None, source_flag=0, slot_idx=i)
-                for i in range(6)  # or 6, depending on your standard
-            ]
+    #         shop_minions = []
+    #         for i in range(self.MAX_SHOP_SIZE):  # or range(6) if you prefer
+    #             if i < len(agent.shop):
+    #                 shop_minions.append(self.encode_minion(agent.shop[i], source_flag=0, slot_idx=i))
+    #             else:
+    #                 shop_minions.append(self.encode_minion(None, source_flag=0, slot_idx=i))  # empty slot
 
-            # === Opponent vector using passed-in kwargs
-            hp_delta = kwargs.get("hp_delta", 0.0)
-            opponent_strength = kwargs.get("opponent_strength", 0.0)
 
-            opponent = self.current_opponent.get(agent, None)
-            opponent_vec = None
+    #         opponent = self.current_opponent.get(agent, None)
+    #         opponent_vec = None
+    #         if opponent in agent.opponent_memory:
+    #             opponent_vec = torch.tensor(agent.opponent_memory[opponent], dtype=torch.float32)
 
-            if opponent is not None:
-                summary = [
-                    float(opponent.tier),
-                    float(opponent_strength),
-                    float(hp_delta),
-                    self.turn
-                ]
-                agent.opponent_memory[opponent] = summary
-                opponent_vec = torch.tensor(summary, dtype=torch.float32)
+    #     if phase == "combat":
+    #         # === Combat econ vector (no shop)
+    #         econ_vec = torch.tensor([0.0, agent.gold_cap, 0.0, 0.0], dtype=torch.float32)
+
+    #         # === No shop minions during combat
+    #         shop_minions = [
+    #             self.encode_minion(None, source_flag=0, slot_idx=i)
+    #             for i in range(self.MAX_SHOP_SIZE)  # or 6, depending on your standard
+    #         ]
+
+    #         # === Opponent vector using passed-in kwargs
+    #         hp_delta = kwargs.get("hp_delta", 0.0)
+    #         opponent_strength = kwargs.get("opponent_strength", 0.0)
+
+    #         opponent = self.current_opponent.get(agent, None)
+    #         opponent_vec = None
+
+    #         if opponent is not None:
+    #             summary = [
+    #                 float(opponent.tier),
+    #                 float(opponent_strength),
+    #                 float(hp_delta),
+    #                 self.turn
+    #             ]
+    #             agent.opponent_memory[opponent] = summary
+    #             opponent_vec = torch.tensor(summary, dtype=torch.float32)
 
                 
 
-        # === Tier vector ===
-        tier_vec = torch.tensor([
-            1 if i < agent.tier else 0 for i in range(6)
-        ], dtype=torch.float32)
+    #     # === Tier vector ===
+    #     tier_vec = torch.tensor([
+    #         1 if i < agent.tier else 0 for i in range(self.MAX_TIER)
+    #     ], dtype=torch.float32)
 
-        board_minions = []
-        for i in range(7):  # Always 7 board slots
-            if i < len(agent.board):
-                board_minions.append(encode_minion(agent.board[i], source_flag=1, slot_idx=i))
-            else:
-                board_minions.append(encode_minion(None, source_flag=1, slot_idx=i))  # padded empty slot
+    #     board_minions = []
+    #     for i in range(7):  # Always 7 board slots
+    #         if i < len(agent.board):
+    #             board_minions.append(self.encode_minion(agent.board[i], source_flag=1, slot_idx=i))
+    #         else:
+    #             board_minions.append(self.encode_minion(None, source_flag=1, slot_idx=i))  # padded empty slot
 
 
-        return agent.build_tokens(
-            state_vec=state_vec,
-            board_minions=board_minions,
-            shop_minions=shop_minions,
-            econ_vec=econ_vec,
-            tier_vec=tier_vec,
-            current_turn=self.turn,  # Explicitly passed here
-            opponent_vec=opponent_vec
-        )
+    #     return agent.build_tokens(
+    #         state_vec=state_vec,
+    #         board_minions=board_minions,
+    #         shop_minions=shop_minions,
+    #         econ_vec=econ_vec,
+    #         tier_vec=tier_vec,
+    #         current_turn=self.turn,  # Explicitly passed here
+    #         opponent_vec=opponent_vec
+    #     )
 
     def build_state(self, agent, phase="active", **kwargs):
         """Polymorphic state builder that works for both agent types"""
@@ -395,205 +627,38 @@ class TinyBattlegroundsEnv:
             return self.build_transformer_state(agent, phase, **kwargs)
         else:
             # MLP gets simplified vector
-            if phase == "active":
-                return self.build_active_state(agent)
-            else:
-                # Extract combat info from kwargs or agent
-                previous_health = kwargs.get('previous_health', 
-                                        getattr(agent, 'previous_health', 0))
-                enemy_strength = kwargs.get('enemy_strength', 
-                                        sum(m.strength() for m in self.current_opponent[agent].board))
-                return self.build_combat_state(agent, previous_health, enemy_strength)
+            return self.build_mlp_state(agent, phase, **kwargs)
 
+    def build_mlp_state(self, agent, phase="active", **kwargs):
+        turn_number = self.turn
+        tier = agent.tier
+        gold_cap = agent.gold_cap
+        num_minions = len(agent.board)
+        board_strength = sum(m.strength() for m in agent.board)
 
-    def step(self, verbose=False, focus_agent_name=None):
-        # ⚔️ --- Match Making ---
-        alive_agents = [a for a in self.agents if a.alive]
-        pairs = self.matchmaking(alive_agents)
-        self.current_opponent = {}
+        if phase == "active":
+            gold = agent.gold
+            health = agent.health
+            shop_slots = [m.tier for m in agent.shop]
+            while len(shop_slots) < self.MAX_SHOP_SIZE:
+                shop_slots.append(0)
+            health_delta = 0.0
+        elif phase == "combat":
+            gold = 0.0
+            health = agent.health
+            shop_slots = [0.0] * self.MAX_SHOP_SIZE
+            health_delta = kwargs.get("hp_delta", 0.0)
+        else:
+            raise ValueError(f"Unknown phase: {phase}")
 
-        for p1, p2 in pairs:
-            if p2 is None:
-                self.current_opponent[p1] = None
+        state_vector = [
+            gold, gold_cap, tier, health, turn_number,
+            board_strength, num_minions,
+            *shop_slots,
+            health_delta,
+            kwargs.get("opponent_strength", 0.0)
+        ]
+        while len(state_vector) < 19:
+            state_vector.append(0.0)
+        return torch.tensor(state_vector, dtype=torch.float32)
 
-            else:
-                self.current_opponent[p1] = p2
-                self.current_opponent[p2] = p1
-
-        # === ACTIVE PHASE ===
-        for agent in self.agents:
-            if not agent.alive:
-                continue
-
-            agent.shop = self.roll_shop(agent.tier)
-            agent.gold_cap = min(3 + self.turn - 1, 10)
-            agent.gold = agent.gold_cap
-
-
-
-            if verbose and agent.name == focus_agent_name:
-                print(f"\n--- Turn {self.turn} ---")
-                print(f"Gold: {agent.gold}, Health: {agent.health}, Tier: {agent.tier}")
-                print("Board:" if agent.board else "Board: EMPTY")
-                for m in agent.board:
-                    print(f"  {m.name} ({m.attack}/{m.health})")
-                print(f"Shop of length {len(agent.shop)}:" if agent.shop else "Shop: EMPTY")
-                for idx, m in enumerate(agent.shop):
-                    print(f"  [{idx}] {m.name} ({m.attack}/{m.health})")
-
-            while agent.gold > 0:
-                available_actions = self.get_available_actions(agent)
-
-                if not available_actions:
-                    break
-                
-                state = self.build_state(agent)
-                action = agent.act(state)
-                action_str = available_actions[action % len(available_actions)]
-
-                if hasattr(agent, "behavior_counts"):
-                    for key in agent.behavior_counts:
-                        if action_str.startswith(key):
-                            agent.behavior_counts[key] += 1
-
-                if verbose and agent.name == focus_agent_name:
-                    print(f"Action chosen: {action_str}")
-
-                if action_str == "end_turn":
-                    if agent.gold > 5:
-                        agent.turns_skipped_this_game += 1
-                    if verbose and agent.name == focus_agent_name:
-                        print(">> Ending turn early.")
-                    
-                    agent.observe(state, 0.0, turn=self.turn)  # Add turn number
-
-
-                    break
-
-                if action_str == "level":
-                    cost = agent.tavern_upgrade_cost
-                    if agent.gold >= cost:
-                        agent.gold -= cost
-                        agent.tier += 1
-                        agent.tavern_upgrade_cost = self.get_base_upgrade_cost(agent.tier)
-                        agent.gold_spent_this_game += cost
-                        if verbose and agent.name == focus_agent_name:
-                            print(f">> Upgraded to Tier {agent.tier}.")
-
-                    state = self.build_state(agent)
-                    agent.observe(state, 0.0, turn=self.turn)  # Add turn number
-
-                    continue
-
-                if action_str.startswith("buy_"):
-                    idx = int(action_str.split("_")[1])
-                    if idx < len(agent.shop) and agent.gold >= 3 and len(agent.board) < 7:
-                        bought_minion = agent.shop[idx]
-                        agent.gold -= 3
-                        agent.board.append(agent.shop.pop(idx))
-                        agent.minions_bought_this_game += 1
-                        agent.gold_spent_this_game += 3
-                        if verbose and agent.name == focus_agent_name:
-                            print(f">> Bought {bought_minion.name} ({bought_minion.attack}/{bought_minion.health})")
-
-                    state = self.build_state(agent)
-                    agent.observe(state, 0.0, turn=self.turn)  # Add turn number
-
-                    continue
-
-                if action_str == "roll":
-                    if agent.gold >= 1:
-                        agent.gold -= 1
-                        agent.shop = self.roll_shop(agent.tier)
-                        agent.gold_spent_this_game += 1
-                    state = self.build_state(agent)
-                    agent.observe(state, 0.0, turn=self.turn)  # Add turn number
-
-                    continue
-
-                if action_str.startswith("sell_"):
-                    idx = int(action_str.split("_")[1])
-                    if idx < len(agent.board):
-                        sold_minion = agent.board.pop(idx)
-                        agent.gold += 1
-                        if verbose and agent.name == focus_agent_name:
-                            print(f">> Sold {sold_minion.name} ({sold_minion.attack}/{sold_minion.health})")
-                    state = self.build_state(agent)
-                    agent.observe(state, 0.0, turn=self.turn)  # Add turn number
-                    continue
-
-        # Reduce upgrade cost
-        for agent in self.agents:
-            old_cost = agent.tavern_upgrade_cost
-            agent.tavern_upgrade_cost = max(agent.tavern_upgrade_cost - 1, 0)
-            if verbose and agent.name == focus_agent_name:
-                print(f"[Turn {self.turn}] {agent.name} (Tier {agent.tier}) upgrade cost: {old_cost} → {agent.tavern_upgrade_cost}")
-
-        # ⚔️ --- COMBAT PHASE ---
-        for p1, p2 in pairs:
-            self.simulate_combat(p1, p2)
-
-        self.remove_dead()
-
-
-
-    
-
-    def play_game(self, verbose=False, focus_agent_name=None):
-        self.setup()
-
-        while sum(1 for agent in self.agents if agent.alive) > 1 and self.turn <= 100:
-            self.step(verbose=verbose, focus_agent_name=focus_agent_name)
-            self.turn += 1
-
-        # ✅ After game ends, fix final survivors who never died
-        for agent in self.agents:
-            if agent.alive and agent not in self.dead:
-                self.dead[agent] = self.turn
-
-            # ✅ Clamp MMR to be non-negative
-            agent.mmr = max(0, agent.mmr)
-
-        return self.calculate_rewards()
-
-
-
-    def calculate_rewards(self):
-        death_turns = sorted(self.dead.items(), key=lambda x: (x[1], random.random()))
-        placements = []
-
-        idx = 0
-        while idx < len(death_turns):
-            same_turn = [death_turns[idx]]
-            idx += 1
-            while idx < len(death_turns) and death_turns[idx][1] == same_turn[0][1]:
-                same_turn.append(death_turns[idx])
-                idx += 1
-            placements.append(same_turn)
-
-        placement_rewards = {
-            1: 80,
-            2: 60,
-            3: 40,
-            4: 20,
-            5: -20,
-            6: -40,
-            7: -60,
-            8: -80,
-        }
-
-        rewards = {}
-        current_place = len(self.agents)
-
-        for tied_group in placements:
-            tied_size = len(tied_group)
-            reward_sum = sum(placement_rewards.get(current_place - i, -80) for i in range(tied_size))
-            average_reward = reward_sum / tied_size
-            for agent, _ in tied_group:
-                rewards[agent.name] = average_reward
-                agent.mmr += average_reward  # ✅ Apply reward
-                agent.mmr = max(0, agent.mmr)  # ✅ Clamp here after adding
-
-            current_place -= tied_size
-
-        return rewards

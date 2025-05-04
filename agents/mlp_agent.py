@@ -20,11 +20,6 @@ class TinyNNPolicy(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-    def predict_action(self, state):
-        logits = self.forward(state)
-        probs = torch.softmax(logits, dim=-1)
-        action = torch.multinomial(probs, 1)
-        return action.item(), probs
 
 
 class TinyValueNet(nn.Module):
@@ -55,10 +50,17 @@ class SelfLearningAgent:
         self.mmr = 0.0
         self.ancestor = ancestor if ancestor is not None else name
 
-    def act(self, state):
-        action, probs = self.policy.predict_action(state)
+    def act(self, state, action_mask=None):
+        logits = self.policy(state)
+
+        if action_mask is not None:
+            logits[~action_mask] = -float("inf")
+
+        probs = torch.softmax(logits, dim=-1)
+        action = torch.multinomial(probs, 1).item()
         log_prob = torch.log(probs[action])
         value = self.value_net(state)
+
         self.memory.append({
             "state": state.detach(),
             "action": action,
@@ -67,11 +69,11 @@ class SelfLearningAgent:
         })
         return action
 
+
     # In mlp_agent.py
     def observe(self, state, reward, **kwargs):
         """Store combat-relevant info if provided"""
-        if 'previous_health' in kwargs:
-            self.previous_health = kwargs['previous_health']
+        
         self.memory.append({
             'state': state,
             'reward': reward,
@@ -95,10 +97,15 @@ class SelfLearningAgent:
             reward = final_mmr * (turn / final_turn) if "turn" in entry else final_mmr
             
             # Original learning logic
-            advantage = reward - entry.get("value", 0)
+            value = entry.get("value", torch.tensor(0.0))
+            if not isinstance(value, torch.Tensor):
+                value = torch.tensor(value, dtype=torch.float32)
+            advantage = torch.tensor(reward, dtype=torch.float32) - value
+
             if "log_prob" in entry:  # Action entry
                 policy_losses.append(-entry["log_prob"] * advantage.detach())
             value_losses.append(advantage.pow(2))
+
         
         loss = torch.stack(policy_losses).sum() + 0.5 * torch.stack(value_losses).sum()
         self.optimizer.zero_grad()
@@ -129,11 +136,5 @@ class SelfLearningAgent:
         data = torch.load(filepath)
         self.policy.load_state_dict(data["policy"])
         self.value_net.load_state_dict(data["value_net"])
-
-    def build_state(self, env, phase="active", **kwargs):
-        if phase == "combat":
-            return env.build_combat_state(self, kwargs["previous_health"], kwargs["enemy_strength"])
-        else:
-            return env.build_active_state(self)
 
 

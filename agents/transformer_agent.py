@@ -7,19 +7,16 @@ import json
 with open("data/minion_pool.json", "r") as f:
     minion_data = json.load(f)
 
+class TransformerAgent(nn.Module):
 
+    def __init__(self, name="TransformerAgent", action_size=16, embed_dim=128, num_heads=4, num_layers=2):
+        super().__init__()
 
-
-
-class TransformerAgent:
-
-    def __init__(self, name="TransformerAgent", action_size=5, embed_dim=128, num_heads=4, num_layers=2):
         self.name = name
         self.action_size = action_size
         self.embed_dim = embed_dim
         self.memory = []
         self.mmr = 0
-        self.opponent_memory = {}  # opponent_id → summary vector
         # === Token Embedding Layers ===
         self.state_embed = nn.Linear(3, embed_dim)  # [tier, health, turn]
         self.minion_embed = nn.Linear(15, embed_dim)  # [atk, hp, tier, tribes (10), source_flag, slot_idx]
@@ -62,24 +59,6 @@ class TransformerAgent:
                list(self.policy_head.parameters()) + \
                list(self.value_head.parameters()) + [self.cls_token]
     
-    def _update_opponent_memory(self, opponent, turn):
-        if opponent is None:
-            return
-
-        if not hasattr(self, "opponent_memory"):
-            self.opponent_memory = {}
-
-        # Always update with fresh summary
-        strength = sum(m.attack + m.health for m in opponent.board)
-        summary = [
-            float(opponent.tier),
-            float(strength),
-            0.0,  # hp_delta only known at build_state time
-            float(turn) 
-        ]
-        self.opponent_memory[opponent] = summary
-
-
     def build_tokens(self, state_vec, board_minions, shop_minions, econ_vec, tier_vec, current_turn=None, opponent_vec=None):
         # Add turn progression signal (0-1 normalized)
         turn_progress = torch.tensor([current_turn / 20.0]) if current_turn is not None else torch.tensor([0.0])
@@ -117,13 +96,29 @@ class TransformerAgent:
         return all_tokens
 
 
-    def act(self, token_input):
-
+    def act(self, token_input, action_mask=None):
         output = self.transformer(token_input)  # [1, N+1, embed_dim]
-        cls_output = output[0, 0]  # [embed_dim]
+        cls_output = output[0, 0]               # [embed_dim]
 
-        logits = self.policy_head(cls_output)
-        logits = logits - logits.max()  # stabilizer
+        logits = self.policy_head(cls_output)   # [16]
+        logits = logits - logits.max()          # stabilizer
+        # print(action_mask) ## TODO
+        # === Apply action mask (optional) ===
+        if action_mask is not None:
+            logits[~action_mask] = -float("inf")
+
+            ## TODO
+            # if action_mask.sum() == 0:
+            #     print("⚠️ No valid actions — forcing end_turn fallback")
+            #     logits[:] = -float("inf")
+            #     logits[self.END_TURN_IDX] = 0.0
+
+            # # 🔍 Debugging info
+            # print("🎯 Action Mask:", action_mask.tolist())
+            # print("📈 Masked Logits:", logits.tolist())
+
+
+
         probs = F.softmax(logits, dim=-1)
 
         if torch.isnan(probs).any() or torch.isinf(probs).any() or (probs < 0).any():
@@ -133,23 +128,21 @@ class TransformerAgent:
             print("  Probs:", probs)
             print("  Agent name:", self.name)
             print("  Action size:", self.action_size)
-
+            print("  Mask:", action_mask)
 
         action = torch.multinomial(probs, 1).item()
-
-
         value = self.value_head(cls_output).squeeze()
-
         log_prob = torch.log(probs[action])
 
         self.memory.append({
-            "state": token_input,  # Add state reference
+            "state": token_input,
             "log_prob": log_prob,
             "value": value,
-            "reward": None,  # To be filled later
-            "turn": getattr(self, 'env', None).turn
+            "reward": None,
         })
+
         return action
+
 
     def observe(self, state, reward, turn=None):
         self.current_turn = turn  # NEW: Store turn when observing
@@ -164,47 +157,45 @@ class TransformerAgent:
         self.memory.append({
             "state": state,
             "reward": reward,
-            "turn": turn if turn is not None else getattr(self, 'env', None).turn,
             "value": value  # Add value estimate to all entries
         })
 
-    def learn(self, final_mmr):
-        """Handle all memory entry formats safely"""
+    def learn(self, reward):
         if not self.memory:
             return
             
-        # Get final turn safely
-        final_turn = max(entry.get("turn", 1) for entry in self.memory)
+        # Calculate advantage using the reward (MMR)
+        advantages = []
+        for entry in self.memory:
+            value = entry.get('value', 0)
+            advantage = reward - value.item() if torch.is_tensor(value) else reward - value
+            advantages.append(advantage)
         
-        # Process all entries
+        # Normalize advantages
+        advantages = torch.tensor(advantages)
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        
+        # Calculate losses
         policy_loss = []
         value_loss = []
+        for entry, advantage in zip(self.memory, advantages):
+            if 'log_prob' in entry:
+                policy_loss.append(-entry['log_prob'] * advantage)
+            if 'value' in entry:
+                value_loss.append(F.mse_loss(entry['value'], torch.tensor(reward, dtype=torch.float32)))
+
         
-        for entry in self.memory:
-            # Skip entries missing required fields
-            if "value" not in entry:
-                continue
-                
-            # Calculate reward weighting
-            turn_weight = entry.get("turn", 1) / final_turn
-            reward = final_mmr * turn_weight
-            
-            # Handle both action and observation entries
-            if "log_prob" in entry:  # Action entry
-                advantage = reward - entry["value"]
-                policy_loss.append(-entry["log_prob"] * advantage.detach())
-                value_loss.append(advantage.pow(2))
-            else:  # Observation entry
-                value_loss.append((reward - entry["value"]).pow(2))
-        
+        # Update if we have any losses
         if policy_loss or value_loss:
-            loss = (torch.stack(policy_loss).sum() if policy_loss else 0) + \
-                (0.5 * torch.stack(value_loss).sum() if value_loss else 0)
+            loss = torch.stack(policy_loss).sum() + torch.stack(value_loss).sum()
             self.optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
             self.optimizer.step()
         
         self.memory.clear()
+
+
 
 
 
@@ -216,12 +207,25 @@ class TransformerAgent:
         
     def state_dict(self):
         return {
+            # "state_embed": self.state_embed.state_dict(),
+            # "minion_embed": self.minion_embed.state_dict(),
+            # "econ_embed": self.econ_embed.state_dict(),
+            # "tier_projector": self.tier_projector.state_dict(),
+            # "opponent_embed": self.opponent_embed.state_dict(),
+            # "cls_token": self.cls_token.data,
+            "transformer": self.transformer.state_dict(),
             "policy_head": self.policy_head.state_dict(),
             "value_head": self.value_head.state_dict(),
-            "transformer": self.transformer.state_dict()
         }
 
     def load_state_dict(self, state_dict):
+        # self.state_embed.load_state_dict(state_dict["state_embed"])
+        # self.minion_embed.load_state_dict(state_dict["minion_embed"])
+        # self.econ_embed.load_state_dict(state_dict["econ_embed"])
+        # self.tier_projector.load_state_dict(state_dict["tier_projector"])
+        # self.opponent_embed.load_state_dict(state_dict["opponent_embed"])
+        # self.cls_token.data.copy_(state_dict["cls_token"])
+        self.transformer.load_state_dict(state_dict["transformer"])
         self.policy_head.load_state_dict(state_dict["policy_head"])
         self.value_head.load_state_dict(state_dict["value_head"])
-        self.transformer.load_state_dict(state_dict["transformer"])
+

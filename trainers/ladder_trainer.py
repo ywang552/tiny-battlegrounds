@@ -23,13 +23,14 @@ SAVE_DIR = "saved_models"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 # === AGENT FACTORY ===
-def make_agent(i):
-    if AGENT_TYPE == "transformer":
+def make_agent(i, agent_type):
+    if agent_type == "transformer":
         return TransformerAgent(name=f"Transformer_{i}")
-    elif AGENT_TYPE == "mlp":
-        return SelfLearningAgent(input_size=20, action_size=5, name=f"MLP_{i}")
+    elif agent_type == "mlp":
+        return SelfLearningAgent(input_size=19, action_size=5, name=f"MLP_{i}")
     else:
-        raise ValueError(f"Unsupported AGENT_TYPE: {AGENT_TYPE}")
+        raise ValueError(f"Unsupported agent_type: {agent_type}")
+
 
 # === MATCHMAKING ===
 def matchmake(agents, game_size):
@@ -70,7 +71,7 @@ def evaluate_against_snapshots(agent, snapshot_paths):
                 clone.gold_spent_this_game = 0 
                 clone.minions_bought_this_game = 0
             else:
-                clone = SelfLearningAgent(20, 5, name=f"Snapshot_{os.path.basename(path)}")
+                clone = SelfLearningAgent(19, 5, name=f"Snapshot_{os.path.basename(path)}")
                 clone.load(path)
                 clone.memory = []
             
@@ -112,7 +113,22 @@ def plot_mmr(agents, history, gen):
 
 # === MAIN TRAINING LOOP ===
 def main():
-    agents = [make_agent(i) for i in range(NUM_AGENTS)]
+    def make_mixed_agents(num_agents):
+        half = num_agents // 2
+        agents = []
+        for i in range(num_agents):
+            if i < half:
+                agents.append(make_agent(i, agent_type="transformer"))
+            else:
+                agents.append(make_agent(i, agent_type="mlp"))
+        return agents
+    
+    NUM_AGENTS = 8
+    # agents = make_mixed_agents(NUM_AGENTS)
+    agents = []
+    for i in range(NUM_AGENTS):
+        agents.append(make_agent(i, agent_type="transformer"))
+
     mmr_history = []
     generation = 0
 
@@ -139,16 +155,17 @@ def main():
                 evaluate_against_snapshots(top_agent, snapshots)
 
             plot_mmr(agents, mmr_history, generation)
-
+            top_agent = max(agents, key=lambda a: a.mmr)
+            print(isinstance(top_agent, TransformerAgent))
             if generation % 10 == 0:
                 top_agent = max(agents, key=lambda a: a.mmr)
                 print(f"[Gen {generation}] Top Agent: {top_agent.name} | MMR: {top_agent.mmr:.2f}")
 
-    except KeyboardInterrupt:
-        print("\n🛑 Training manually interrupted.")
+    # except KeyboardInterrupt:
+    #     print("\n🛑 Training manually interrupted.")
 
-    except Exception as e:
-        print(f"\n💥 Exception occurred: {e}")
+    # except Exception as e:
+    #     print(f"\n💥 Exception occurred: {e}")
 
     finally:
         top_agent = max(agents, key=lambda a: a.mmr)
