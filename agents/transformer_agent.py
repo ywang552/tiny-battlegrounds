@@ -12,21 +12,26 @@ class TransformerAgent(nn.Module):
     def __init__(self, name="TransformerAgent", action_size=16, embed_dim=128, num_heads=4, num_layers=2):
         super().__init__()
         self.phase_embed = nn.Linear(1, embed_dim)
+        
 
         self.name = name
+
+
         self.action_size = action_size
         self.embed_dim = embed_dim
         self.memory = []
         self.mmr = 0
         # === Token Embedding Layers ===
         self.state_embed = nn.Linear(3, embed_dim)  # [tier, health, turn]
-        self.minion_embed = nn.Linear(15, embed_dim)  # [atk, hp, tier, tribes (10), source_flag, slot_idx]
+        self.minion_embed = nn.Linear(16, embed_dim)  # [atk, hp, tier, tribes (10), source_flag, slot_idx]
         self.econ_embed = nn.Linear(6, embed_dim)  # [gold, gold_cap, reroll_cost, upgrade_cost]
         self.tier_projector = nn.Linear(6, embed_dim)  # frozen projection
         self.tier_projector.weight.requires_grad = False
         self.tier_projector.bias.requires_grad = False
-        self.opponent_embed = nn.Linear(4, embed_dim)  # summary vector: 6 + opponent_id
+        self.opponent_embed = nn.Linear(5, embed_dim)  
         self.cls_token = nn.Parameter(torch.zeros(1, embed_dim))
+        self.combat_embed = nn.Linear(2, embed_dim)
+
         self.turns_skipped_this_game = 0 
         self.gold_spent_this_game = 0 
         self.minions_bought_this_game = 0 
@@ -36,7 +41,11 @@ class TransformerAgent(nn.Module):
 
         # === Heads ===
         self.policy_head = nn.Linear(embed_dim, action_size)
-        self.value_head = nn.Linear(embed_dim, 1)
+        self.value_head = nn.Sequential(
+            nn.Linear(embed_dim, 1),
+            nn.Tanh()
+        )
+
 
         # === Optimizer ===
         self.optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
@@ -60,66 +69,126 @@ class TransformerAgent(nn.Module):
                list(self.policy_head.parameters()) + \
                list(self.value_head.parameters()) + [self.cls_token]
     
-    def build_tokens(self, state_vec, board_minions, shop_minions, econ_vec, tier_vec, current_turn=None, opponent_vec=None):
-        # Add turn progression signal (0-1 normalized)
-        turn_progress = torch.tensor([current_turn / 20.0]) if current_turn is not None else torch.tensor([0.0])
-        
-        # Enhanced econ embedding
+    def build_attention_mask(self, phase, board_minions, shop_minions, combat_vec=None):
+        attention_mask = [1]  # [CLS]
+
+        # Core tokens
+        attention_mask.append(1)  # state_vec
+        attention_mask.append(1 if phase == "active" else 0)  # econ_vec
+        attention_mask.append(1 if phase == "active" else 0)  # tier_vec
+
+
+        # Board minions
+        for minion in board_minions:
+            is_padding = torch.all(minion[:3] == -1)
+            attention_mask.append(0 if is_padding else 1)
+
+        # Shop minions
+        if phase == "active":
+            for minion in shop_minions:
+                is_padding = torch.all(minion == 0)
+                attention_mask.append(0 if is_padding else 1)
+        else:
+            attention_mask += [0] * len(shop_minions)
+
+        # Opponent summary
+        attention_mask.append(1 if phase == "active" else 0)
+
+        # Combat summary
+        attention_mask.append(1 if phase == "combat" and combat_vec is not None else 0)
+
+        return torch.tensor(attention_mask).unsqueeze(0)  # [1, seq_len]
+
+
+    def build_tokens(
+        self,
+        state_vec,
+        board_minions,
+        shop_minions,
+        econ_vec,
+        tier_vec,
+        opponent_vec,
+        combat_vec,
+        phase="active"
+    ):
+        current_turn = state_vec[2].item()
+        turn_progress = torch.tensor([current_turn / 20.0])
         enhanced_econ = torch.cat([
             econ_vec,
             turn_progress,
-            torch.tensor([len(board_minions) / 7.0])  # Board commitment
+            torch.tensor([len(board_minions) / 7])
         ])
-    
+
         tokens = []
-    
 
-        tokens.append(self.state_embed(state_vec))
-        tokens.append(self.econ_embed(enhanced_econ))
-        tokens.append(self.tier_projector(tier_vec))
+        # 1. CLS
+        tokens.append(self.cls_token.squeeze(0))  # [D]
 
+        # 2. Core state
+        tokens.append(self.state_embed(state_vec))          # [D]
+        tokens.append(self.econ_embed(enhanced_econ))       # [D]
+        tokens.append(self.tier_projector(tier_vec))        # [D]
 
-
-        # ✅ board_minions and shop_minions already include slot index in encode_minion()
+        # 3. Board
         for minion in board_minions:
-            tokens.append(self.minion_embed(minion))
+            tokens.append(self.minion_embed(minion))        # [D] x7
 
+        # 4. Shop
         for minion in shop_minions:
-            tokens.append(self.minion_embed(minion))
+            tokens.append(self.minion_embed(minion))        # [D] x6
 
-        if opponent_vec is not None:
-            tokens.append(self.opponent_embed(opponent_vec))
+        # 5. Opponent
+        tokens.append(self.opponent_embed(opponent_vec))    # [D]
 
-        cls = self.cls_token.unsqueeze(0)  # [1, D]
-        all_tokens = torch.stack(tokens).unsqueeze(0)  # [1, N, D]
-        all_tokens = torch.cat([cls, all_tokens], dim=1)  # [1, N+1, D]
+        # 6. Combat
+        tokens.append(self.combat_embed(combat_vec))        # [D]
 
-        return all_tokens
+        # 7. Stack
+        token_tensor = torch.stack(tokens).unsqueeze(0)     # [1, 19, D]
+
+        # 8. Attention Mask
+        attention_mask = self.build_attention_mask(phase, board_minions, shop_minions)
+
+        # 9. Sanity Check
+        assert token_tensor.shape[1] == attention_mask.shape[1] == 19, \
+            f"Shape mismatch: tokens={token_tensor}, mask={attention_mask}"
+
+        return token_tensor, attention_mask
 
 
-    def act(self, token_input, action_mask=None):
-        output = self.transformer(token_input)  # [1, N+1, embed_dim]
-        cls_output = output[0, 0]               # [embed_dim]
 
-        logits = self.policy_head(cls_output)   # [16]
-        logits = logits - logits.max()          # stabilizer
-        # print(action_mask) ## TODO
-        # === Apply action mask (optional) ===
+
+    def act(self, token_input, action_mask=None, attention_mask=None):
+        # === Run Transformer with attention mask ===
+        transformer_output = self.transformer(
+            token_input,  # shape: [1, seq_len, D]
+            src_key_padding_mask=(attention_mask == 0) if attention_mask is not None else None
+        )  # shape: [1, seq_len, D]
+
+        # === Use CLS token output ===
+        cls_output = transformer_output[0, 0]  # shape: [D]
+
+        # === Policy head ===
+        logits = self.policy_head(cls_output)  # shape: [action_size]
+        logits = logits - logits.max()         # numerical stabilizer
+
+        # === Apply action mask ===
         if action_mask is not None:
             logits[~action_mask] = -float("inf")
-            if action_mask.sum() == 0:  # No valid actions
+            if action_mask.sum() == 0:
                 logits[:] = -float("inf")
-                logits[self.END_TURN_IDX] = 0.0  # Force end turn
+                logits[self.END_TURN_IDX] = 0.0
                 print("⚠️ No valid actions - defaulting to end_turn")
 
-
-
-
+        # === Softmax to get probabilities ===
         probs = F.softmax(logits, dim=-1)
+
+        # === Fallback if probs are invalid ===
         if not torch.isfinite(probs).all():
-            probs = torch.ones_like(probs) / len(probs)  # Uniform fallback
+            probs = torch.ones_like(probs) / len(probs)
             print("🚨 Invalid probs - using uniform distribution")
 
+        # === Log for rare numerical issues ===
         if torch.isnan(probs).any() or torch.isinf(probs).any() or (probs < 0).any():
             print("🚨 Bad probs triggered!")
             print("  CLS output:", cls_output)
@@ -129,10 +198,12 @@ class TransformerAgent(nn.Module):
             print("  Action size:", self.action_size)
             print("  Mask:", action_mask)
 
+        # === Sample action ===
         action = torch.multinomial(probs, 1).item()
         value = self.value_head(cls_output).squeeze()
         log_prob = torch.log(probs[action])
 
+        # === Store in memory ===
         self.memory.append({
             "state": token_input,
             "log_prob": log_prob,
@@ -143,56 +214,84 @@ class TransformerAgent(nn.Module):
         return action
 
 
-    def observe(self, state, reward, turn=None):
-        self.current_turn = turn  # NEW: Store turn when observing
-    # ... rest of original code ...
-        """Ensure all entries have value estimates"""
+
+    def observe(self, token_input, reward, attention_mask=None):
+
         with torch.no_grad():
-            # Generate value estimate for all observations
-            output = self.transformer(state)
-            cls_output = output[0, 0]
-            value = self.value_head(cls_output).squeeze()
-        
+            output = self.transformer(
+                token_input,
+                src_key_padding_mask=(attention_mask == 0) if attention_mask is not None else None
+            )
+            cls_output = output[0, 0]  # extract CLS embedding
+            value = self.value_head(cls_output).squeeze()  # scalar
+
         self.memory.append({
-            "state": state,
+            "state": token_input,
             "reward": reward,
-            "value": value  # Add value estimate to all entries
+            "value": value
         })
 
-    def learn(self, reward):
+
+    def learn(self, reward: float):
         if not self.memory:
-            return
-            
-        # Calculate advantage using the reward (MMR)
+            return  # Nothing to learn from
+        self.value_errors = []
+        self.value_preds = []
+
+
+        # === 1. Compute advantage for each memory entry ===
         advantages = []
         for entry in self.memory:
-            value = entry.get('value', 0)
-            advantage = reward - value.item() if torch.is_tensor(value) else reward - value
+            value = entry.get('value', 0.0)
+            if isinstance(value, torch.Tensor):
+                value = value.item()
+            advantage = reward - value
             advantages.append(advantage)
-        
-        # Normalize advantages
+
+        # Normalize advantages (helps training stability)
         advantages = torch.tensor(advantages)
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        
-        # Calculate losses
-        policy_loss = []
-        value_loss = []
-        for entry, advantage in zip(self.memory, advantages):
-            if 'log_prob' in entry:
-                policy_loss.append(-entry['log_prob'] * advantage)
-            if 'value' in entry:
-                value_loss.append(F.mse_loss(entry['value'], torch.tensor(reward, dtype=torch.float32)))
 
-        
-        # Update if we have any losses
-        if policy_loss or value_loss:
-            loss = torch.stack(policy_loss).sum() + torch.stack(value_loss).sum()
-            self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
-            self.optimizer.step()
-        
+        # === 2. Compute policy and value loss ===
+        policy_losses = []
+        value_losses = []
+
+        for entry, adv in zip(self.memory, advantages):
+            # --- Train the policy head ---
+            log_prob = entry.get("log_prob", None)
+            if log_prob is not None:
+                policy_losses.append(-log_prob * adv)
+
+            # --- Train the value head ---
+            value = entry.get("value", None)
+            if value is not None:
+                target = torch.tensor(reward, dtype=torch.float32)
+                loss = F.mse_loss(value, target)
+                value_losses.append(loss)
+            
+            if self.name == "Transformer_0":
+                self.value_errors.append(loss.detach().item())
+                self.value_preds.append(value.detach().item() if torch.is_tensor(value) else value)
+
+
+
+
+        # === 3. Backpropagation ===
+        if policy_losses or value_losses:
+            total_loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum()
+
+            self.optimizer.zero_grad()        # Reset gradients
+            total_loss.backward()             # Compute gradients through:
+                                            # ✅ value head
+                                            # ✅ policy head
+                                            # ✅ transformer
+                                            # ✅ input embeddings
+            torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)  # Stability
+            self.optimizer.step()             # Apply updates
+
+        # === 4. Clear memory ===
         self.memory.clear()
+
 
 
 

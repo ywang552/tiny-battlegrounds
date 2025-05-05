@@ -47,5 +47,5 @@ def simulate_single_game(agent):
 if __name__ == "__main__":
     # ✨ Load your trained agent
     agent = make_agent(0)
-    agent.load("saved_models/BEST_Transformer_1_transformer_20250504_001207.pt")  # Example
+    agent.load("saved_models/BEST_Transformer_2_transformer_20250505_020248.pt")  # Example
     simulate_single_game(agent)

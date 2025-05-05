@@ -54,8 +54,8 @@ class TinyBattlegroundsEnv:
     }
 
     PLACEMENT_REWARDS = {
-        1: 80, 2: 60, 3: 40, 4: 20,
-        5: -20, 6: -40, 7: -60, 8: -80
+        1: 1, 2: .75, 3: .5, 4: .25,
+        5: -.25, 6: -.5, 7: -.75, 8: -1
     }
 
     @staticmethod
@@ -69,7 +69,8 @@ class TinyBattlegroundsEnv:
 
         # Initialize with zeros (more memory efficient)
         tribes = torch.zeros(11)  # Now includes "None" explicitly
-        base = torch.zeros(3)     # [attack, health, tier]
+        base = torch.full((3,), -1.0)  # [attack, health, tier]
+
 
         if minion is not None:
             # Handle tribes more efficiently
@@ -170,11 +171,15 @@ class TinyBattlegroundsEnv:
 
     def _simulate_agent_turn(self, agent, verbose=False, focus_agent_name=None):
 
-        while agent.gold > 0:
+        while agent.gold >= 0:
 
-            mask = self.get_action_mask(agent)
             state = self.build_state(agent, phase="active")
-            action = agent.act(state, action_mask=mask)
+            action = agent.act(
+                token_input=state["tokens"],
+                action_mask=state["masks"]["action"],                      # ✅ your gold/board/shop logic
+                attention_mask=state["masks"]["attention"]  # ✅ internal sequence visibility
+            )
+
             action_str = self.decode_action(agent, action)
 
 
@@ -204,12 +209,13 @@ class TinyBattlegroundsEnv:
     def _handle_end_turn(self, agent, verbose, focus_agent_name):
         if agent.gold > 5:
             agent.turns_skipped_this_game += 1
-        if verbose and agent.name == focus_agent_name:
+        if verbose and agent.name == focus_agent_name and agent.gold > 5:
             print(">> Ending turn early.")
         state = self.build_state(agent, phase="active")
-        agent.observe(state, 0.0)
+        agent.observe(state["tokens"], 0.0, attention_mask=state["masks"]["attention"])
 
     def _handle_level(self, agent, verbose, focus_agent_name):
+
         cost = agent.tavern_upgrade_cost
         if agent.gold >= cost:
             agent.gold -= cost
@@ -220,7 +226,7 @@ class TinyBattlegroundsEnv:
             if verbose and agent.name == focus_agent_name:
                 print(f">> Upgraded to Tier {agent.tier}")
         state = self.build_state(agent, phase="active")
-        agent.observe(state, 0.0)
+        agent.observe(state["tokens"], 0.0, attention_mask=state["masks"]["attention"])
 
     def _handle_buy(self, agent, idx, verbose, focus_agent_name):
         if agent.shop and idx < len(agent.shop) and agent.gold >= self.MINION_COST and len(agent.board) < self.MAX_BOARD_SIZE:
@@ -233,7 +239,7 @@ class TinyBattlegroundsEnv:
             if verbose and agent.name == focus_agent_name:
                 print(f">> Bought {bought_minion.name} ({bought_minion.attack}/{bought_minion.health})")
         state = self.build_state(agent, phase="active")
-        agent.observe(state, 0.0)
+        agent.observe(state["tokens"], 0.0, attention_mask=state["masks"]["attention"])
 
     def _handle_roll(self, agent):
         if agent.gold >= self.ROLL_COST:
@@ -242,7 +248,7 @@ class TinyBattlegroundsEnv:
             agent.gold_spent_this_game += 1
             agent.gold_spent_this_turn += 1
         state = self.build_state(agent, phase="active")
-        agent.observe(state, 0.0)
+        agent.observe(state["tokens"], 0.0, attention_mask=state["masks"]["attention"])
 
     def _handle_sell(self, agent, idx, verbose, focus_agent_name):
         if idx < len(agent.board):
@@ -252,7 +258,7 @@ class TinyBattlegroundsEnv:
                 print(f">> Sold {sold_minion.name} ({sold_minion.attack}/{sold_minion.health})")
             agent.gold_earned_this_turn += 1
         state = self.build_state(agent, phase="active")
-        agent.observe(state, 0.0)
+        agent.observe(state["tokens"], 0.0, attention_mask=state["masks"]["attention"])
 
     def _reduce_upgrade_costs(self, verbose=False, focus_agent_name=None):
         for agent in self.agents:
@@ -323,7 +329,7 @@ class TinyBattlegroundsEnv:
         elif action_idx == self.ROLL_IDX:
             return "roll"
         elif action_idx == self.LEVEL_IDX:
-            return f"level to {agent.tier + 1}"
+            return f"level"
 
         elif action_idx == self.END_TURN_IDX:
             return "end_turn"
@@ -340,10 +346,10 @@ class TinyBattlegroundsEnv:
         if m1 == m2:
             if a.alive:
                 state = self.build_state(a, phase="combat", hp_delta=0.0, opponent_strength=m2)
-                a.observe(state, 0.0, turn=self.turn)  # Add turn number
+                a.observe(state["tokens"], 0.0, attention_mask=state["masks"]["attention"])
             if d.alive:
-                state = self.build_state(d, phase="combat", hp_delta=0.0, opponent_strength=m1)
-                d.observe(state, 0.0, turn = self.turn)
+                state = self.build_state(a, phase="combat", hp_delta=0.0, opponent_strength=m1)
+                d.observe(state["tokens"], 0.0, attention_mask=state["masks"]["attention"])
             return
 
         # Determine winner and loser
@@ -352,25 +358,17 @@ class TinyBattlegroundsEnv:
 
         # Winner reward
         if winner.alive:
-            state = self.build_state(
-                winner,
-                phase="combat",
-                hp_delta=0.0,
-                opponent_strength=sum(m.strength() for m in loser.board)
-            )
-            winner.observe(state, 0.0, turn=self.turn)  # Add turn number
+            state = self.build_state(winner, phase="combat", hp_delta=0.0, opponent_strength=sum(m.strength() for m in loser.board))
+            winner.observe(state["tokens"], 0, attention_mask=state["masks"]["attention"])
+            
 
         # Loser punishment
         if loser.alive:
             damage = winner.tier + sum(m.tier for m in winner.board)
             loser.health -= damage
-            state = self.build_state(
-                loser,
-                phase="combat",
-                hp_delta=damage,
-                opponent_strength=sum(m.strength() for m in winner.board)
-            )
-            loser.observe(state, -5.0, turn = self.turn)
+            state = self.build_state(loser, phase="combat", hp_delta=damage, opponent_strength=sum(m.strength() for m in winner.board))
+            loser.observe(state["tokens"], 0, attention_mask=state["masks"]["attention"])
+            
 
     def remove_dead(self):
         latest_turn = self.turn
@@ -433,7 +431,7 @@ class TinyBattlegroundsEnv:
 
         for group in placement_groups:
             size = len(group)
-            reward_sum = sum(self.PLACEMENT_REWARDS.get(current_place - i, -80) for i in range(size))
+            reward_sum = sum(self.PLACEMENT_REWARDS.get(current_place - i, -1) for i in range(size))
             average = reward_sum / size
 
             for agent, _ in group:
@@ -464,25 +462,13 @@ class TinyBattlegroundsEnv:
         assert opponent, f"Invalid Opponent! Dictionary: {self.current_opponent}, Agent: {agent.name}"
         agent.opponent_memory[opponent] = (self.turn, combat_vec[1], opponent.tier)  # (turn, strength)
 
-    def _build_action_mask(self, agent, phase):
-        mask = torch.zeros(16, dtype=torch.bool)
-        if phase == "active":
-            # Buy actions
-            buyable = agent.gold >= self.MINION_COST
-            mask[self.BUY_START:self.BUY_START + len(agent.shop)] = buyable
-            
-            # Other actions
-            mask[self.ROLL_IDX] = agent.gold >= self.ROLL_COST
-            mask[self.LEVEL_IDX] = agent.gold >= agent.tavern_upgrade_cost
-            mask[self.SELL_START:self.SELL_START + len(agent.board)] = True
-            mask[self.END_TURN_IDX] = True
-        return mask
-
-
     def build_transformer_state(self, agent, phase="active", **kwargs):
         # === 1. Phase Validation ===
         assert phase in ["active", "combat"], f"Invalid Phase: {phase}"
-        
+    
+        econ_vec = torch.zeros(4)
+        opponent_vec = torch.zeros(5)
+        combat_vec = torch.zeros(2)
         # === 2. Basic State ===
         state_vec = torch.tensor([
             float(agent.health), 
@@ -495,11 +481,12 @@ class TinyBattlegroundsEnv:
             econ_vec = torch.tensor([
                 float(agent.gold),
                 float(agent.gold_cap),
-                1.0  # Roll cost
+                1.0,  # Roll cost
+                float(agent.tavern_upgrade_cost)
             ], dtype=torch.float32)
             
             opponent = self.current_opponent.get(agent)
-            enemy_vec = self._get_enemy_summary(agent, opponent) if opponent else torch.zeros(5)
+            opponent_vec = self._get_enemy_summary(agent, opponent) if opponent else torch.zeros(5)
         else:
             combat_vec = torch.tensor([
                 float(kwargs.get("hp_delta", 0.0)),
@@ -518,24 +505,37 @@ class TinyBattlegroundsEnv:
             return torch.stack(encoded + padding)
         
         board_minions = pad_sequence(agent.board, self.MAX_BOARD_SIZE, 1)  # 7 board slots
-        shop_minions = pad_sequence(agent.shop, self.MAX_SHOP_SIZE, 0) if phase == "active" else torch.zeros(self.MAX_BOARD_SIZE, 16)
+        shop_minions = pad_sequence(agent.shop, self.MAX_SHOP_SIZE, 0) if phase == "active" else torch.zeros(self.MAX_SHOP_SIZE, 16)
         
+        # === Tier vector ===
+        tier_vec = torch.tensor([
+            1 if i < agent.tier else 0 for i in range(self.MAX_TIER)
+        ], dtype=torch.float32)
+
+        tokens, attention_mask = agent.build_tokens(
+            state_vec=state_vec,
+            board_minions=board_minions,
+            shop_minions=shop_minions,
+            econ_vec=econ_vec,
+            tier_vec=tier_vec,
+            opponent_vec=opponent_vec,
+            combat_vec=combat_vec,
+            phase=phase
+        )
+
+
         # === 5. Assemble Output ===
         return {
-            "tokens": {
-                "state": state_vec,
-                "phase": torch.tensor([1.0 if phase == "active" else 0.0]),
-                "econ": econ_vec if phase == "active" else torch.zeros(3),
-                "enemy": enemy_vec if phase == "active" else torch.zeros(5),
-                "combat": combat_vec if phase == "combat" else torch.zeros(2),
-                "board": board_minions,
-                "shop": shop_minions
-            },
+            "tokens": tokens,
             "masks": {
-                "action": self._build_action_mask(agent, phase),
-                "attention": torch.ones(1)  # Dummy mask
+                "action": self.get_action_mask(agent),
+                "attention": attention_mask
             }
         }
+
+
+
+    
 
 
     # def build_transformer_state(self, agent, phase="active", **kwargs):
@@ -662,3 +662,17 @@ class TinyBattlegroundsEnv:
             state_vector.append(0.0)
         return torch.tensor(state_vector, dtype=torch.float32)
 
+
+
+import torch
+from types import SimpleNamespace
+
+def test_encode_minion():
+    encode = TinyBattlegroundsEnv.encode_minion  # Shortcut if inside TransformerAgent
+    
+    # Case 1: Normal minion with "Beast"
+    m1 = SimpleNamespace(attack=3, health=2, tier=1, types=["Beast"])
+    out1 = encode(None, 0)
+    print(out1)
+
+# test_encode_minion()

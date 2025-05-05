@@ -1,7 +1,7 @@
 # === ladder_trainer.py ===
-import torch
 import random
 import os
+import statistics
 import matplotlib
 matplotlib.use('Agg')  # Disable GUI backend for headless environments
 import matplotlib.pyplot as plt
@@ -11,7 +11,7 @@ from env.tiny_battlegrounds import TinyBattlegroundsEnv
 from agents.mlp_agent import SelfLearningAgent
 from agents.transformer_agent import TransformerAgent
 
-# === CONFIGURATION ===
+# === CONFIGURATION ===WW
 NUM_AGENTS = 16
 GAME_SIZE = 8
 SAVE_EVERY = 20
@@ -43,8 +43,29 @@ def matchmake(agents, game_size):
         games.append(group)
     return games
 
+
+def plot_value_error_trace(errors, label):
+    plt.figure(figsize=(8, 4))
+    plt.plot(errors, label=label, marker='o')
+    plt.xlabel("Action Step")
+    plt.ylabel("Prediction Error (|value - reward|)")
+    plt.title(f"Value Head Prediction Error - {label}")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+
+    # Save to disk
+    plt.savefig(os.path.join(SAVE_DIR, f"value_error_{label}.png"))
+
+    # Display the plot window
+    plt.show()
+
+    # Clear the figure after displaying
+    plt.close()
+
+
 # === GAME SIMULATION ===
-def run_game(agent_group):
+def run_game(agent_group, gen):
     env = TinyBattlegroundsEnv(agent_group)
     rewards = env.play_game()
     
@@ -54,6 +75,18 @@ def run_game(agent_group):
         except Exception as e:
             print(f"⚠️ Learning failed for {agent.name}: {e}")
             continue
+    
+    for agent in agent_group:
+        if agent.name == "Transformer_0" and hasattr(agent, "value_errors"):
+            plot_value_error_trace(agent.value_errors, f"gen_{gen}")
+            print(f"📊 Gen {gen} avg error: {statistics.mean(agent.value_errors):.2f}, reward:{rewards[agent.name]}")
+            print(f"value_head mean:{statistics.mean(agent.value_preds):.2f}")
+            agent.value_errors.clear()
+            agent.value_preds.clear()
+
+
+
+
             
     return [a.mmr for a in agent_group]
 
@@ -139,7 +172,7 @@ def main():
 
             games = matchmake(agents, GAME_SIZE)
             for game in games:
-                run_game(game)
+                run_game(game, generation)
 
             if generation % EVAL_EVERY == 0:
                 top_agent = max(agents, key=lambda a: a.mmr)
