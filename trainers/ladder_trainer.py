@@ -84,10 +84,6 @@ def run_game(agent_group, gen):
             agent.value_errors.clear()
             agent.value_preds.clear()
 
-
-
-
-            
     return [a.mmr for a in agent_group]
 
 def evaluate_against_snapshots(agent, snapshot_paths):

@@ -164,7 +164,7 @@ class TinyBattlegroundsEnv:
         ## TODO
         if verbose and agent.name == focus_agent_name and agent.alive:
             print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Agent_({focus_agent_name})-> turn: {self.turn}, gold: {agent.gold}, tavern: {agent.tier}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-
+            print(f"current shop: {agent.shop}")
     def _run_combat_phase(self):
         for p1, p2 in self.match_pairs:
             self.simulate_combat(p1, p2)
@@ -335,8 +335,6 @@ class TinyBattlegroundsEnv:
             return "end_turn"
 
         return "invalid"
-
-
 
     def simulate_combat(self, a, d):
         m1 = sum(m.strength() for m in a.board)
@@ -522,7 +520,6 @@ class TinyBattlegroundsEnv:
             combat_vec=combat_vec,
             phase=phase
         )
-
 
         # === 5. Assemble Output ===
         return {

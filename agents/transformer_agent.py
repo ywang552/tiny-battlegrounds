@@ -45,8 +45,7 @@ class TransformerAgent(nn.Module):
             nn.Linear(embed_dim, 1),
             nn.Tanh()
         )
-
-
+        
         # === Optimizer ===
         self.optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
 
