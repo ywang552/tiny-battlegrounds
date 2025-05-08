@@ -3,6 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import json
 
+import os
+import logging
+LOG_DIR = "agent_logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+
 
 with open("data/minion_pool.json", "r") as f:
     minion_data = json.load(f)
@@ -56,6 +61,22 @@ class TransformerAgent(nn.Module):
             "level": 0,
             "end_turn": 0,
         }
+
+        # === Add logger for this agent ===
+        self.logger = logging.getLogger(self.name)
+        self.logger.setLevel(logging.INFO)
+
+        log_path = os.path.join(LOG_DIR, f"{self.name}.log")
+        fh = logging.FileHandler(log_path, mode='a', encoding='utf-8')
+
+        fh.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(message)s')
+        fh.setFormatter(formatter)
+
+        # Avoid duplicated handlers
+        if not self.logger.handlers:
+            self.logger.addHandler(fh)
+
 
 
     def parameters(self):
@@ -202,6 +223,26 @@ class TransformerAgent(nn.Module):
         value = self.value_head(cls_output).squeeze()
         log_prob = torch.log(probs[action])
 
+        if not hasattr(self, "debug_turn_counter"):
+            self.debug_turn_counter = 0
+
+        if self.debug_turn_counter == 0:
+            self.logger.info(f"\nTurn Start")
+            self.logger.info(f"  Action Mask: {action_mask.int().tolist()}")
+            self.logger.info(f"  Logits: {[round(x, 2) for x in logits.detach().cpu().tolist()]}")
+            self.logger.info(f"  Probs: {[round(x, 3) for x in probs.detach().cpu().tolist()]}")
+            self.logger.info(f"  Chosen Action: {action}")
+
+        self.debug_turn_counter += 1
+
+        if action == 15:
+            self.logger.info(f"  ⏹️ End Turn ({self.debug_turn_counter} decisions)\n")
+            self.debug_turn_counter = 0
+
+
+
+
+
         # === Store in memory ===
         self.memory.append({
             "state": token_input,
@@ -272,9 +313,6 @@ class TransformerAgent(nn.Module):
                 self.value_errors.append(loss.detach().item())
                 self.value_preds.append(value.detach().item() if torch.is_tensor(value) else value)
 
-
-
-
         # === 3. Backpropagation ===
         if policy_losses or value_losses:
             total_loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum()
@@ -287,6 +325,27 @@ class TransformerAgent(nn.Module):
                                             # ✅ input embeddings
             torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)  # Stability
             self.optimizer.step()             # Apply updates
+
+
+        # === Diagnostics ===
+        try:
+            avg_value = torch.stack([e['value'] for e in self.memory if 'value' in e]).mean().item()
+            avg_logprob = torch.stack([e['log_prob'] for e in self.memory if 'log_prob' in e]).mean().item()
+            ploss = torch.stack(policy_losses).sum().item() if policy_losses else 0.0
+            vloss = torch.stack(value_losses).sum().item() if value_losses else 0.0
+        except Exception as e:
+            avg_value, avg_logprob, ploss, vloss = 0, 0, 0, 0
+            self.logger.warning(f"[Warning] Failed to compute diagnostics in learn(): {e}")
+
+        # === Log
+        self.logger.info(f"\n🎓 Learn Summary")
+        self.logger.info(f"  Reward: {reward:.2f}")
+        self.logger.info(f"  Avg Value Estimate: {avg_value:.3f}")
+        self.logger.info(f"  Avg LogProb: {avg_logprob:.3f}")
+        self.logger.info(f"  Policy Loss: {ploss:.4f}")
+        self.logger.info(f"  Value Loss: {vloss:.4f}")
+        self.logger.info(f"🎓 End of Game for {self.name}\n")
+
 
         # === 4. Clear memory ===
         self.memory.clear()

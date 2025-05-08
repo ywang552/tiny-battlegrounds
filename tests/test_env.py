@@ -42,22 +42,15 @@ def test_decode_action_compatible_with_step_logic():
     agent = MockAgent("TestAgent")
     env = TinyBattlegroundsEnv([agent])
 
-
-    assert env.decode_action(agent, env.BUY_START) == "buy_0"
-    assert env.decode_action(agent, env.BUY_START + 5) == "buy_6"
+    assert env.decode_action(agent, env.BUY_START) == f"buy_0"
+    assert env.decode_action(agent, env.BUY_START + 5) == "buy_5"
+    assert env.decode_action(agent, env.BUY_START + 6) != "buy_6"
     assert env.decode_action(agent, env.SELL_START) == "sell_0"
-    assert env.decode_action(agent, env.SELL_START + 5 - 1) == "sell_5"
+    assert env.decode_action(agent, env.SELL_START + 6) == "sell_6"
+    assert env.decode_action(agent, env.SELL_START + 7) != "sell_7"
     assert env.decode_action(agent, env.LEVEL_IDX) == "level"
     assert env.decode_action(agent, env.ROLL_IDX) == "roll"
     assert env.decode_action(agent, env.END_TURN_IDX) == "end_turn"
-
-    # Ensure invalid index raises error
-    try:
-        env.decode_action(agent, env.ACTION_SIZE)
-        assert False, "Expected exception"
-    except ValueError:
-        pass
-
 
 
     

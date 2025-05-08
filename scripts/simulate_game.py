@@ -32,7 +32,7 @@ def simulate_single_game(agent):
     env = TinyBattlegroundsEnv(all_agents)
 
     print("\n=== Starting Single Game Simulation ===\n")
-    env.play_game(verbose=True, focus_agent_name=agent.name)  # 🔥 Focus only on your agent
+    rewards = env.play_game(verbose=True, focus_agent_name=agent.name)  # 🔥 Focus only on your agent
 
     print("\n=== Game Over ===")
     for a in env.agents:
@@ -42,6 +42,8 @@ def simulate_single_game(agent):
             for m in a.board:
                 print(f"  {m.name} ({m.attack}/{m.health}) {'*' * m.tier}")
 
+    agent.learn(rewards[agent.name])  # ✅ Log learning summary
+
 
 
 if __name__ == "__main__":
@@ -49,3 +51,5 @@ if __name__ == "__main__":
     agent = make_agent(0)
     agent.load("saved_models/BEST_Transformer_2_transformer_20250505_020248.pt")  # Example
     simulate_single_game(agent)
+    print("\n=== Game Over ===")
+    

@@ -20,7 +20,6 @@ class Minion:
 path = "data\\bg_minions_all.json"  # your full file
 MINION_POOL = [Minion(**data) for data in load_minions(path)]
 
-
 # --- TinyBattlegrounds Environment ---
 class TinyBattlegroundsEnv:
     # === GAME CONSTANTS ===
@@ -43,7 +42,6 @@ class TinyBattlegroundsEnv:
     END_TURN_IDX = 15
 
     ACTION_SIZE = 16      # total number of actions
-
 
     SHOP_SLOTS = {
         1: 3, 2: 4, 3: 4, 4: 5, 5: 5, 6: 6
@@ -70,7 +68,6 @@ class TinyBattlegroundsEnv:
         # Initialize with zeros (more memory efficient)
         tribes = torch.zeros(11)  # Now includes "None" explicitly
         base = torch.full((3,), -1.0)  # [attack, health, tier]
-
 
         if minion is not None:
             # Handle tribes more efficiently
@@ -165,6 +162,7 @@ class TinyBattlegroundsEnv:
         if verbose and agent.name == focus_agent_name and agent.alive:
             print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Agent_({focus_agent_name})-> turn: {self.turn}, gold: {agent.gold}, tavern: {agent.tier}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             print(f"current shop: {agent.shop}")
+            
     def _run_combat_phase(self):
         for p1, p2 in self.match_pairs:
             self.simulate_combat(p1, p2)
@@ -334,7 +332,7 @@ class TinyBattlegroundsEnv:
         elif action_idx == self.END_TURN_IDX:
             return "end_turn"
 
-        return "invalid"
+        return False
 
     def simulate_combat(self, a, d):
         m1 = sum(m.strength() for m in a.board)
@@ -367,7 +365,6 @@ class TinyBattlegroundsEnv:
             state = self.build_state(loser, phase="combat", hp_delta=damage, opponent_strength=sum(m.strength() for m in winner.board))
             loser.observe(state["tokens"], 0, attention_mask=state["masks"]["attention"])
             
-
     def remove_dead(self):
         latest_turn = self.turn
         highest_health_before_death = float('-inf')
@@ -530,11 +527,6 @@ class TinyBattlegroundsEnv:
             }
         }
 
-
-
-    
-
-
     # def build_transformer_state(self, agent, phase="active", **kwargs):
     #     # === Basic info ===
     #     state_vec = torch.tensor([
@@ -592,8 +584,6 @@ class TinyBattlegroundsEnv:
     #             agent.opponent_memory[opponent] = summary
     #             opponent_vec = torch.tensor(summary, dtype=torch.float32)
 
-                
-
     #     # === Tier vector ===
     #     tier_vec = torch.tensor([
     #         1 if i < agent.tier else 0 for i in range(self.MAX_TIER)
@@ -605,7 +595,6 @@ class TinyBattlegroundsEnv:
     #             board_minions.append(self.encode_minion(agent.board[i], source_flag=1, slot_idx=i))
     #         else:
     #             board_minions.append(self.encode_minion(None, source_flag=1, slot_idx=i))  # padded empty slot
-
 
     #     return agent.build_tokens(
     #         state_vec=state_vec,
@@ -659,17 +648,3 @@ class TinyBattlegroundsEnv:
             state_vector.append(0.0)
         return torch.tensor(state_vector, dtype=torch.float32)
 
-
-
-import torch
-from types import SimpleNamespace
-
-def test_encode_minion():
-    encode = TinyBattlegroundsEnv.encode_minion  # Shortcut if inside TransformerAgent
-    
-    # Case 1: Normal minion with "Beast"
-    m1 = SimpleNamespace(attack=3, health=2, tier=1, types=["Beast"])
-    out1 = encode(None, 0)
-    print(out1)
-
-# test_encode_minion()
